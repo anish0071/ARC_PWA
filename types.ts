@@ -27,7 +27,6 @@ export interface StudentRecord {
   altMobile: string;
   officialEmail: string;
   personalEmail: string;
-  isHosteller: boolean;
   
   // Address & Identity
   currentAddress: string;
