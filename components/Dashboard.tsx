@@ -23,6 +23,14 @@ const RAW_DATA: Record<string, [string, string][]> = {
   "Q": [["24CS0034", "AISWARYA M"], ["24CS0040", "AKASSHKUMAR SUGUMAR"], ["24CS0046", "AKSHAYAKUMARAN A"], ["24CS0063", "ANISH MUTHUKRISHNAN"], ["24CS0105", "B AKSHAYA"]]
 };
 
+const INITIAL_FIELD_GROUPS: Record<string, string[]> = {
+  "Core Profile": ["REG NO", "NAME", "DEPT", "YEAR", "SECTION", "GENDER", "MOBILE NO", "ALT MOBILE NO", "OFFICIAL MAIL", "EMAIL"],
+  "Identity & Residence": ["CURRENT ADDRESS", "PERMANENT ADDRESS", "PINCODE", "STATE", "AADHAR NO", "PAN NO", "FATHER NAME", "MOTHER NAME"],
+  "Academic Matrix": ["10TH BOARD %", "12TH BOARD %", "10TH YEAR", "12TH YEAR", "GPA SEM1", "GPA SEM2", "GPA SEM3", "CGPA (3 sem)"],
+  "Coding & Career": ["KNOWN TECH STACK", "RESUME LINK", "WILLING TO RELOCATE", "PLACEMENT/HS", "COMPANY/OFFER LINK", "LEETCODE ID", "LC TOTAL", "LC EASY", "LC MED", "LC HARD", "LC RATING", "LC BADGES", "LC MAX", "CODECHEF ID", "CC TOTAL", "CC RANK", "CC BADGES", "CC RATING", "SR PROBLEMS", "SR RANK", "GITHUB ID", "LINKEDIN"],
+  "Center of Excellence": ["COE NAME", "COE INCHARGE", "COE PROJECTS"]
+};
+
 const generateStudentFromBase = (regNo: string, name: string, section: string): StudentRecord => {
   const seed = parseInt(regNo.replace(/\D/g, '')) || Math.abs(name.split('').reduce((a,b) => (a<<5)-a+b.charCodeAt(0), 0));
   const gender = seed % 2 === 0 ? 'F' : 'M';
@@ -85,14 +93,6 @@ const generateStudentFromBase = (regNo: string, name: string, section: string): 
   };
 };
 
-const STUDENT_FIELD_GROUPS = {
-  "Core Profile": ["REG NO", "NAME", "DEPT", "YEAR", "SECTION", "GENDER", "MOBILE NO", "ALT MOBILE NO", "OFFICIAL MAIL", "EMAIL"],
-  "Identity & Residence": ["CURRENT ADDRESS", "PERMANENT ADDRESS", "PINCODE", "STATE", "AADHAR NO", "PAN NO", "FATHER NAME", "MOTHER NAME"],
-  "Academic Matrix": ["10TH BOARD %", "12TH BOARD %", "10TH YEAR", "12TH YEAR", "GPA SEM1", "GPA SEM2", "GPA SEM3", "CGPA (3 sem)"],
-  "Coding & Career": ["KNOWN TECH STACK", "RESUME LINK", "WILLING TO RELOCATE", "PLACEMENT/HS", "COMPANY/OFFER LINK", "LEETCODE ID", "LC TOTAL", "LC EASY", "LC MED", "LC HARD", "LC RATING", "LC BADGES", "LC MAX", "CODECHEF ID", "CC TOTAL", "CC RANK", "CC BADGES", "CC RATING", "SR PROBLEMS", "SR RANK", "GITHUB ID", "LINKEDIN"],
-  "Center of Excellence": ["COE NAME", "COE INCHARGE", "COE PROJECTS"]
-};
-
 const BATCH_SIZE = 15;
 
 export const Dashboard: React.FC<{ user: UserState; onLogout: () => void; sectionName?: string; onBack?: () => void }> = ({ user, onLogout, sectionName = 'Q', onBack }) => {
@@ -103,6 +103,13 @@ export const Dashboard: React.FC<{ user: UserState; onLogout: () => void; sectio
   const [profileOpen, setProfileOpen] = useState(false);
   const [displayLimit, setDisplayLimit] = useState(BATCH_SIZE);
   const [updationModalOpen, setUpdationModalOpen] = useState(false);
+  const [injectModalOpen, setInjectModalOpen] = useState(false);
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  
+  // Dynamic Schema Management
+  const [fieldGroups, setFieldGroups] = useState(INITIAL_FIELD_GROUPS);
+  const [newFieldName, setNewFieldName] = useState('');
+  const [newFieldCategory, setNewFieldCategory] = useState(Object.keys(INITIAL_FIELD_GROUPS)[0]);
 
   const students = useMemo(() => {
     const rawList = RAW_DATA[sectionName] || [];
@@ -131,6 +138,23 @@ export const Dashboard: React.FC<{ user: UserState; onLogout: () => void; sectio
   const toggleSort = (field: keyof StudentRecord) => {
     if (sortField === field) setSortDirection(prev => (prev === 'asc' ? 'desc' : 'asc'));
     else { setSortField(field); setSortDirection('desc'); }
+  };
+
+  const handleInjectField = () => {
+    if (!newFieldName.trim()) return;
+    setFieldGroups(prev => ({
+      ...prev,
+      [newFieldCategory]: [...prev[newFieldCategory], newFieldName.toUpperCase().trim()]
+    }));
+    setNewFieldName('');
+    setInjectModalOpen(false);
+  };
+
+  const handleDeleteField = (category: string, fieldName: string) => {
+    setFieldGroups(prev => ({
+      ...prev,
+      [category]: prev[category].filter(f => f !== fieldName)
+    }));
   };
 
   return (
@@ -241,7 +265,6 @@ export const Dashboard: React.FC<{ user: UserState; onLogout: () => void; sectio
           </div>
         </div>
 
-        {/* Aside reverted to middle-right positioning only */}
         <aside className="w-full lg:w-80 space-y-6 lg:mt-32">
           <div className="bg-white rounded-[2rem] p-6 border border-slate-100 shadow-sm space-y-8 lg:sticky lg:top-[25vh]">
             <div className="flex items-center gap-3">
@@ -250,13 +273,14 @@ export const Dashboard: React.FC<{ user: UserState; onLogout: () => void; sectio
             </div>
             <div className="space-y-4">
                <CommandBtn label="NEED UPDATION" icon="🔄" sub="Request Data Sync" color="bg-indigo-600" onClick={() => setUpdationModalOpen(true)} />
-               <CommandBtn label="INJECT NEW FIELD" icon="+" sub="Dynamic Expansion" color="bg-violet-600" onClick={() => {}} />
-               <CommandBtn label="DELETE FIELD" icon="🗑️" sub="Prune Schema Nodes" color="bg-rose-600" onClick={() => {}} />
+               <CommandBtn label="INJECT NEW FIELD" icon="+" sub="Dynamic Expansion" color="bg-violet-600" onClick={() => setInjectModalOpen(true)} />
+               <CommandBtn label="DELETE FIELD" icon="🗑️" sub="Prune Schema Nodes" color="bg-rose-600" onClick={() => setDeleteModalOpen(true)} />
             </div>
           </div>
         </aside>
       </div>
 
+      {/* Selected Student Modal */}
       {selectedStudent && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-xl" onClick={() => setSelectedStudent(null)}></div>
@@ -303,27 +327,108 @@ export const Dashboard: React.FC<{ user: UserState; onLogout: () => void; sectio
         </div>
       )}
 
+      {/* Updation Modal (Current Schema View) */}
       {updationModalOpen && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-md" onClick={() => setUpdationModalOpen(false)}></div>
-          <div className="relative bg-white w-full max-w-4xl rounded-[3rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="p-8 border-b border-slate-100 flex justify-between items-center">
+          <div className="relative bg-white w-full max-w-4xl rounded-[3rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in slide-in-from-bottom-8 duration-300">
+            <div className="p-8 border-b border-slate-100 flex justify-between items-center bg-indigo-50/30">
               <h3 className="text-xl font-black uppercase tracking-tight">Intelligence Refresh</h3>
-              <button onClick={() => setUpdationModalOpen(false)} className="p-2 hover:bg-slate-100 rounded-xl">X</button>
+              <button onClick={() => setUpdationModalOpen(false)} className="p-3 hover:bg-slate-100 rounded-2xl transition-colors">
+                <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
             </div>
-            <div className="p-10 overflow-y-auto flex-1 space-y-8">
-              {Object.entries(STUDENT_FIELD_GROUPS).map(([group, fields]) => (
+            <div className="p-10 overflow-y-auto flex-1 space-y-8 custom-scrollbar">
+              {Object.entries(fieldGroups).map(([group, fields]) => (
                 <div key={group}>
                   <h4 className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400 mb-4">{group}</h4>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                     {fields.map(f => (
-                      <button key={f} className="px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl text-[9px] font-black uppercase hover:border-violet-300 transition-all text-left">
+                      <button key={f} className="px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl text-[9px] font-black uppercase hover:border-violet-300 hover:bg-white hover:text-violet-600 transition-all text-left">
                         {f}
                       </button>
                     ))}
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Inject New Field Modal */}
+      {injectModalOpen && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-md" onClick={() => setInjectModalOpen(false)}></div>
+          <div className="relative bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col animate-in zoom-in duration-300">
+            <div className="p-8 bg-violet-600 text-white flex justify-between items-center">
+              <h3 className="text-lg font-black uppercase tracking-widest">Inject Schema Node</h3>
+              <button onClick={() => setInjectModalOpen(false)} className="p-2 hover:bg-white/10 rounded-xl">
+                 <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+            <div className="p-8 space-y-6 bg-slate-50">
+               <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Node Designation (Field Name)</label>
+                  <input 
+                    type="text" 
+                    placeholder="E.G. HACKATHON_WINS" 
+                    className="w-full bg-white border border-slate-200 rounded-2xl py-4 px-5 text-sm font-bold uppercase placeholder:text-slate-300 focus:outline-none focus:border-violet-500 shadow-sm"
+                    value={newFieldName}
+                    onChange={(e) => setNewFieldName(e.target.value)}
+                  />
+               </div>
+               <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Target Category Cluster</label>
+                  <select 
+                    className="w-full bg-white border border-slate-200 rounded-2xl py-4 px-5 text-sm font-bold appearance-none shadow-sm focus:outline-none focus:border-violet-500"
+                    value={newFieldCategory}
+                    onChange={(e) => setNewFieldCategory(e.target.value)}
+                  >
+                    {Object.keys(fieldGroups).map(cat => (
+                      <option key={cat} value={cat}>{cat}</option>
+                    ))}
+                  </select>
+               </div>
+               <Button onClick={handleInjectField}>Confirm Node Injection</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Field Modal */}
+      {deleteModalOpen && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-md" onClick={() => setDeleteModalOpen(false)}></div>
+          <div className="relative bg-white w-full max-w-3xl rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in duration-300">
+            <div className="p-8 bg-rose-600 text-white flex justify-between items-center">
+              <h3 className="text-lg font-black uppercase tracking-widest">Prune Schema Nodes</h3>
+              <button onClick={() => setDeleteModalOpen(false)} className="p-2 hover:bg-white/10 rounded-xl">
+                 <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+            <div className="p-8 overflow-y-auto space-y-10 custom-scrollbar bg-slate-50 flex-1">
+              {Object.entries(fieldGroups).map(([cat, fields]) => (
+                <div key={cat} className="space-y-4">
+                  <h4 className="text-[10px] font-black uppercase tracking-[0.4em] text-rose-400">{cat}</h4>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    {fields.map(f => (
+                      <div key={f} className="group flex items-center justify-between px-4 py-3 bg-white border border-slate-100 rounded-xl shadow-sm hover:border-rose-200 transition-all">
+                        <span className="text-[9px] font-black uppercase tracking-tight text-slate-700">{f}</span>
+                        <button 
+                          onClick={() => handleDeleteField(cat, f)}
+                          className="p-1.5 hover:bg-rose-50 rounded-lg text-rose-300 hover:text-rose-600 transition-colors"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M6 18L18 6M6 6l12 12" /></svg>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="p-6 bg-white border-t border-slate-100 text-center">
+               <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest italic">Deletion is permanent within current session memory cluster.</p>
             </div>
           </div>
         </div>
