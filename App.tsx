@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback } from 'react';
 import { UserState } from './types';
 import { Input, Button, Logo } from './components/UI';
@@ -86,7 +85,7 @@ const App: React.FC = () => {
         isAuthenticated: true 
       });
     } else if (email === 'hod@citchennai.net' && password === '1234') {
-      setUser({ username: 'Dr. Pavitra S', email: email, role: 'HOD', isAuthenticated: true });
+      setUser({ username: 'Dr. Pavitra S', email: email, role: 'HOD_HUB', isAuthenticated: true });
     } else {
       setError('Invalid authorization credentials.');
     }
@@ -110,7 +109,6 @@ const App: React.FC = () => {
 
   if (user) {
     if (user.role === 'HOD') {
-      // HOD can navigate to any section
       return (
         <Dashboard 
           user={user} 
@@ -120,16 +118,21 @@ const App: React.FC = () => {
         />
       );
     }
-    // Faculty restricted to their logged-in section
-    return <Dashboard user={user} onLogout={logout} sectionName={activeSection} />;
-  }
+    
+    if (user.role === 'HOD_HUB') {
+      return (
+        <HODDashboard 
+          user={user} 
+          onLogout={logout} 
+          onSectionSelect={(sec) => {
+            setActiveSection(sec);
+            setUser({ ...user, role: 'HOD' });
+          }} 
+        />
+      );
+    }
 
-  // Intermediate state for HOD Hub
-  if ((user as any)?.role === 'HOD_HUB') {
-      return <HODDashboard user={user as any} onLogout={logout} onSectionSelect={(sec) => {
-          setActiveSection(sec);
-          setUser({ ...(user as any), role: 'HOD' });
-      }} />;
+    return <Dashboard user={user} onLogout={logout} sectionName={activeSection} />;
   }
 
   return (
