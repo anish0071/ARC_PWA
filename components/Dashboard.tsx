@@ -151,14 +151,18 @@ export const Dashboard: React.FC<{ user: UserState; onLogout: () => void; sectio
 
   const aggregates = useMemo(() => {
     const total = SECTION_Q_RECORDS.length;
-    if (total === 0) return { cgpa: '0.00', lc: '0 Rating', residency: '0/0' };
+    if (total === 0) return { cgpa: '0.00', lc: '0 / 0', residency: '0/0' };
+    
     const avgCgpa = SECTION_Q_RECORDS.reduce((acc, s) => acc + s.cgpaOverall, 0) / total;
-    const avgLcRating = Math.round(SECTION_Q_RECORDS.reduce((acc, s) => acc + (s.lcRating || 0), 0) / total);
+    const avgLcRating = SECTION_Q_RECORDS.reduce((acc, s) => acc + (s.lcRating || 0), 0) / total;
+    const avgLcSolved = SECTION_Q_RECORDS.reduce((acc, s) => acc + (s.lcTotal || 0), 0) / total;
     const hostellers = SECTION_Q_RECORDS.filter(s => s.isHosteller).length;
+    const dayScholars = total - hostellers;
+
     return { 
       cgpa: avgCgpa.toFixed(2), 
-      lc: `${avgLcRating} Rating`, 
-      residency: `${hostellers}H / ${total - hostellers}D` 
+      lc: `${Math.round(avgLcSolved)} / ${Math.round(avgLcRating)}`, 
+      residency: `${hostellers}H / ${dayScholars}D` 
     };
   }, []);
 
@@ -205,9 +209,9 @@ export const Dashboard: React.FC<{ user: UserState; onLogout: () => void; sectio
       <div className="flex-1 flex flex-col lg:flex-row max-w-[1600px] mx-auto w-full p-4 lg:p-6 gap-6 overflow-hidden">
         <div className="flex-1 flex flex-col gap-6 overflow-y-auto custom-scrollbar pr-2">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <AiryStatCard label="BATCH GPA INDEX" value={aggregates.cgpa} sub="Global Metrics" icon="🏆" color="purple" />
-            <AiryStatCard label="CODING PULSE" value={aggregates.lc} sub="Rating Hub" icon="💻" color="blue" />
-            <AiryStatCard label="RESIDENCY HUB" value={aggregates.residency} sub="Cluster View" icon="🏠" color="green" />
+            <AiryStatCard label="SECTION AVG CGPA" value={aggregates.cgpa} sub="Global Metrics" icon="🏆" color="purple" />
+            <AiryStatCard label="CODING SOLVED / RATING" value={aggregates.lc} sub="Avg Solved / Avg Rating" icon="💻" color="blue" />
+            <AiryStatCard label="RESIDENCY HUB" value={aggregates.residency} sub="Hosteller / DayScholar" icon="🏠" color="green" />
           </div>
 
           <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
@@ -456,7 +460,7 @@ export const Dashboard: React.FC<{ user: UserState; onLogout: () => void; sectio
         </div>
       )}
 
-      {/* Prune Logic Modal (Exclusively for Fields/Columns) */}
+      {/* Prune Logic Modal */}
       {pruneModalOpen && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-xl" onClick={() => setPruneModalOpen(false)}></div>
