@@ -87,4 +87,8 @@ export interface StudentRecord {
   coeName: string;
   coeIncharge: string;
   coeProjects: string;
+
+  // Residency
+  // Added isHosteller to StudentRecord to fix type errors in Dashboard.tsx
+  isHosteller: boolean;
 }
