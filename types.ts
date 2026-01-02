@@ -1,4 +1,3 @@
-
 export type AuthMode = 'login' | 'signup' | 'forgot-password';
 
 export interface SecurityAnalysis {
@@ -10,7 +9,7 @@ export interface SecurityAnalysis {
 export interface UserState {
   username: string;
   email: string;
-  role: string;
+  role: 'FACULTY' | 'HOD' | 'HOD_HUB';
   isAuthenticated: boolean;
 }
 
