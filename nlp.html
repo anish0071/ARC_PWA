@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arc Student NLP Search</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @keyframes fadeIn { 
+      from { opacity: 0; transform: translateY(20px); } 
+      to { opacity: 1; transform: translateY(0); } 
+    }
+    @keyframes slideIn { 
+      from { opacity: 0; transform: translateX(-20px); } 
+      to { opacity: 1; transform: translateX(0); } 
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: .5; }
+    }
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Segoe UI Emoji', sans-serif;
+      background: linear-gradient(135deg, #e0e7ff 0%, #ddd6fe 50%, #fce7f3 100%);
+    }
+    .card-shadow { 
+      box-shadow: 0 20px 60px rgba(0,0,0,0.12);
+      transition: all 0.3s ease;
+    }
+    .card-shadow:hover {
+      box-shadow: 0 30px 80px rgba(0,0,0,0.18);
+      transform: translateY(-2px);
+    }
+    .emoji { font-family: "Apple Color Emoji", "Segoe UI Emoji", sans-serif; }
+    .gradient-text {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .table-row-hover:hover {
+      background: linear-gradient(90deg, rgba(99, 102, 241, 0.1) 0%, rgba(168, 85, 247, 0.1) 100%);
+      transform: scale(1.01);
+      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.15);
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .rank-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      font-weight: bold;
+      font-size: 0.875rem;
+    }
+    .details-card {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border-radius: 20px;
+      padding: 30px;
+      margin: 10px 0;
+      box-shadow: 0 10px 40px rgba(102, 126, 234, 0.4);
+    }
+    .detail-item {
+      background: rgba(255, 255, 255, 0.15);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 12px;
+      padding: 15px;
+      margin: 8px 0;
+      transition: all 0.3s ease;
+    }
+    .detail-item:hover {
+      background: rgba(255, 255, 255, 0.25);
+      transform: translateX(5px);
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useCallback, useRef, useEffect } = React;
+
+    function App() {
+      const [fileName, setFileName] = useState('');
+      const [data, setData] = useState({ headers: [], data: [] });
+      const [question, setQuestion] = useState('');
+      const [results, setResults] = useState({ type: 'table', data: [], summary: '', columns: [] });
+      const [loading, setLoading] = useState(false);
+      const dataRef = useRef(data);
+
+      useEffect(() => { dataRef.current = data; }, [data]);
+
+      const handleFileUpload = useCallback((e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        
+        setFileName(file.name);
+        setLoading(true);
+        setResults({ type: 'table', data: [], summary: '', columns: [] });
+        
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const workbook = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+            const sheet = workbook.Sheets[workbook.SheetNames[0]];
+            const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+            
+            const headers = jsonData[0]?.map(h => String(h).trim()) || [];
+            const rows = jsonData.slice(1).map(row => {
+              const obj = {};
+              headers.forEach((h, i) => obj[h] = row[i] !== undefined ? String(row[i]).trim() : '');
+              return obj;
+            });
+            
+            setData({ headers, data: rows });
+            console.log(`✅ Loaded ${rows.length} students with ${headers.length} columns`);
+          } catch (err) {
+            alert('Error reading Excel: ' + err.message);
+          } finally {
+            setLoading(false);
+          }
+        };
+        reader.onerror = () => {
+          alert('Error reading file');
+          setLoading(false);
+        };
+        reader.readAsArrayBuffer(file);
+      }, []);
+
+      const getRelevantColumns = useCallback((query, allHeaders) => {
+        const qLower = query.toLowerCase();
+        
+        // Top N queries
+        if (qLower.includes('top') && (qLower.includes('leetcode') || qLower.includes('lc'))) {
+          return ['RANK', 'REG NO', 'NAME', 'LEETCODE ID', 'LC TOTAL', 'LC EASY', 'LC MED', 'LC HARD', 'LC RATING', 'LC BADGES'];
+        }
+        if (qLower.includes('top') && (qLower.includes('codechef') || qLower.includes('cc'))) {
+          return ['RANK', 'REG NO', 'NAME', 'CODECHEF ID', 'CC TOTAL', 'CC RANK', 'CC RATING', 'CC BADGES'];
+        }
+        if (qLower.includes('top') && qLower.includes('cgpa')) {
+          return ['RANK', 'REG NO', 'NAME', 'SECTION', 'CGPA (3 sem)', 'GPA SEM1', 'GPA SEM2', 'GPA SEM3'];
+        }
+        
+        // Relocation queries
+        if (qLower.includes('relocate') || qLower.includes('willing')) {
+          return ['REG NO', 'NAME', 'MOBILE NO', 'EMAIL', 'WILLING TO RELOCATE'];
+        }
+        
+        // Contact queries
+        if (qLower.includes('contact') || qLower.includes('mobile') || qLower.includes('phone')) {
+          return ['REG NO', 'NAME', 'MOBILE NO', 'ALT MOBILE NO', 'EMAIL', 'OFFICIAL MAIL'];
+        }
+        
+        // CGPA/Academic queries
+        if (qLower.includes('cgpa') || qLower.includes('gpa')) {
+          return ['REG NO', 'NAME', 'SECTION', 'CGPA (3 sem)'];
+        }
+        
+        // Badge/Coding queries
+        if (qLower.includes('badge') || qLower.includes('leetcode') || qLower.includes('codechef')) {
+          return ['REG NO', 'NAME', 'LEETCODE ID', 'LC TOTAL', 'LC RATING', 'LC BADGES', 'CODECHEF ID', 'CC RATING'];
+        }
+        
+        // COE queries
+        if (qLower.includes('coe') || qLower.includes('ai/ml') || qLower.includes('web dev') || qLower.includes('cloud')) {
+          return ['REG NO', 'NAME', 'MOBILE NO', 'COE NAME', 'COE INCHARGE', 'KNOWN TECH STACK'];
+        }
+        
+        // Tech stack queries
+        if (qLower.includes('tech') || qLower.includes('stack') || qLower.includes('genai')) {
+          return ['REG NO', 'NAME', 'KNOWN TECH STACK', 'CGPA (3 sem)', 'COMPANY/OFFER LINK'];
+        }
+        
+        // Placement queries
+        if (qLower.includes('placement') || qLower.includes('company') || qLower.includes('offer')) {
+          return ['REG NO', 'NAME', 'MOBILE NO', 'CGPA (3 sem)', 'COMPANY/OFFER LINK', 'WILLING TO RELOCATE'];
+        }
+        
+        // Default
+        return allHeaders.slice(0, 10);
+      }, []);
+
+      const parseAndExecuteQuery = useCallback((q) => {
+        const question = q.trim();
+        if (!question) return { type: 'empty', data: [], summary: 'Enter a query', columns: [] };
+
+        const students = dataRef.current.data;
+        const headers = dataRef.current.headers;
+        
+        if (!students.length) return { type: 'empty', data: [], summary: 'Upload Excel first', columns: [] };
+
+        const qLower = question.toLowerCase();
+        let filtered = [...students];
+
+        // ========== NEW: TOP N QUERIES ==========
+        const topLCMatch = qLower.match(/top\s*(\d+)\s*(?:leetcode|lc)\s*(?:count|total)?/i);
+        if (topLCMatch) {
+          const topN = Number(topLCMatch[1]);
+          
+          // Sort by LC TOTAL descending
+          filtered = students
+            .filter(r => Number(r['LC TOTAL'] || 0) > 0)
+            .sort((a, b) => Number(b['LC TOTAL'] || 0) - Number(a['LC TOTAL'] || 0))
+            .slice(0, topN)
+            .map((student, idx) => ({
+              ...student,
+              RANK: idx + 1
+            }));
+          
+          return {
+            type: 'table',
+            data: filtered,
+            summary: `Top ${topN} students by LeetCode count`,
+            columns: ['RANK', 'REG NO', 'NAME', 'LEETCODE ID', 'LC TOTAL', 'LC EASY', 'LC MED', 'LC HARD', 'LC RATING', 'LC BADGES']
+          };
+        }
+
+        const topCCMatch = qLower.match(/top\s*(\d+)\s*(?:codechef|cc)\s*(?:count|total)?/i);
+        if (topCCMatch) {
+          const topN = Number(topCCMatch[1]);
+          
+          filtered = students
+            .filter(r => Number(r['CC TOTAL'] || 0) > 0)
+            .sort((a, b) => Number(b['CC TOTAL'] || 0) - Number(a['CC TOTAL'] || 0))
+            .slice(0, topN)
+            .map((student, idx) => ({
+              ...student,
+              RANK: idx + 1
+            }));
+          
+          return {
+            type: 'table',
+            data: filtered,
+            summary: `Top ${topN} students by CodeChef count`,
+            columns: ['RANK', 'REG NO', 'NAME', 'CODECHEF ID', 'CC TOTAL', 'CC RANK', 'CC RATING', 'CC BADGES']
+          };
+        }
+
+        const topCGPAMatch = qLower.match(/top\s*(\d+)\s*(?:cgpa|gpa)/i);
+        if (topCGPAMatch) {
+          const topN = Number(topCGPAMatch[1]);
+          
+          filtered = students
+            .filter(r => Number(r['CGPA (3 sem)'] || 0) > 0)
+            .sort((a, b) => Number(b['CGPA (3 sem)'] || 0) - Number(a['CGPA (3 sem)'] || 0))
+            .slice(0, topN)
+            .map((student, idx) => ({
+              ...student,
+              RANK: idx + 1
+            }));
+          
+          return {
+            type: 'table',
+            data: filtered,
+            summary: `Top ${topN} students by CGPA`,
+            columns: ['RANK', 'REG NO', 'NAME', 'SECTION', 'CGPA (3 sem)', 'GPA SEM1', 'GPA SEM2', 'GPA SEM3']
+          };
+        }
+
+        // ========== QUERY TYPE 1: [Student Name] details ==========
+        const detailsMatch = qLower.match(/([a-z\s]+?)\s+details?$/i);
+        if (detailsMatch) {
+          const nameQuery = detailsMatch[1].trim();
+          filtered = students.filter(r => 
+            String(r.NAME || '').toLowerCase().includes(nameQuery.toLowerCase())
+          );
+          
+          if (filtered.length === 0) {
+            return { type: 'empty', data: [], summary: `❌ No student found with name "${nameQuery}"`, columns: [] };
+          }
+          
+          if (filtered.length === 1) {
+            return {
+              type: 'details',
+              data: filtered,
+              summary: filtered[0].NAME,
+              columns: headers
+            };
+          }
+          
+          return {
+            type: 'table',
+            data: filtered,
+            summary: `Found ${filtered.length} students matching "${nameQuery}"`,
+            columns: ['REG NO', 'NAME', 'MOBILE NO', 'EMAIL', 'CGPA (3 sem)']
+          };
+        }
+
+        // ========== QUERY TYPE 2: [Student Name] [specific field] ==========
+        const fieldMatch = qLower.match(/([a-z\s]+?)\s+(aadhar|pan|mobile|email|cgpa|tech|stack|resume|leetcode|codechef|github|linkedin|company|offer|coe|lc|cc|rating|badge|gpa|address|pincode|father|mother|10th|12th)/i);
+        if (fieldMatch) {
+          const nameQuery = fieldMatch[1].trim();
+          const fieldQuery = fieldMatch[2].toLowerCase();
+          
+          filtered = students.filter(r => 
+            String(r.NAME || '').toLowerCase().includes(nameQuery.toLowerCase())
+          );
+          
+          if (filtered.length === 0) {
+            return { type: 'empty', data: [], summary: `❌ No student found with name "${nameQuery}"`, columns: [] };
+          }
+          
+          const student = filtered[0];
+          
+          const fieldMap = {
+            'aadhar': 'AADHAR NO', 'pan': 'PAN NO', 'mobile': 'MOBILE NO', 'email': 'EMAIL',
+            'cgpa': 'CGPA (3 sem)', 'tech': 'KNOWN TECH STACK', 'stack': 'KNOWN TECH STACK',
+            'resume': 'RESUME LINK', 'leetcode': 'LEETCODE ID', 'lc': 'LC TOTAL',
+            'codechef': 'CODECHEF ID', 'cc': 'CC TOTAL', 'github': 'GITHUB ID',
+            'linkedin': 'LINKEDIN', 'company': 'COMPANY/OFFER LINK', 'offer': 'COMPANY/OFFER LINK',
+            'coe': 'COE NAME', 'rating': 'LC RATING', 'badge': 'LC BADGES',
+            'gpa': 'GPA SEM1', 'address': 'CURRENT ADDRESS', 'pincode': 'PINCODE',
+            'father': 'FATHER NAME', 'mother': 'MOTHER NAME', '10th': '10TH BOARD %', '12th': '12TH BOARD %'
+          };
+          
+          const actualField = fieldMap[fieldQuery] || headers.find(h => 
+            h.toLowerCase().includes(fieldQuery)
+          );
+          
+          if (actualField) {
+            const value = student[actualField] || '—';
+            return {
+              type: 'field',
+              data: [],
+              summary: { name: student.NAME, field: actualField, value: value },
+              columns: []
+            };
+          }
+        }
+
+        // ========== QUERY TYPE 3: Relocation filters ==========
+        if (qLower.includes('relocate') || qLower.includes('willing')) {
+          const cities = ['bangalore', 'hyderabad', 'chennai', 'mumbai', 'pune', 'delhi'];
+          const matchedCity = cities.find(city => qLower.includes(city));
+          
+          if (matchedCity) {
+            filtered = students.filter(r => {
+              const relocate = String(r['WILLING TO RELOCATE'] || '').toLowerCase();
+              return relocate.includes(matchedCity);
+            });
+            
+            if (qLower.includes('only')) {
+              filtered = filtered.filter(r => {
+                const relocate = String(r['WILLING TO RELOCATE'] || '').toLowerCase().split(',').map(s => s.trim());
+                return relocate.length === 1 && relocate[0].includes(matchedCity);
+              });
+            }
+          }
+        }
+
+        // ========== QUERY TYPE 4: LC Badges ==========
+        if (qLower.includes('badge')) {
+          const badgeMatch = qLower.match(/(?:more than|greater than|>|>=)\s*(\d+)\s*(?:lc\s*)?badge/i) ||
+                            qLower.match(/(\d+)\s*(?:\+|or more)\s*badge/i);
+          
+          if (badgeMatch) {
+            const minBadges = Number(badgeMatch[1]);
+            filtered = students.filter(r => {
+              const badges = Number(r['LC BADGES'] || 0);
+              return badges > minBadges;
+            });
+          }
+        }
+
+        // ========== QUERY TYPE 5: CGPA filters ==========
+        if (qLower.includes('cgpa') || qLower.includes('gpa')) {
+          const cgpaMatch = qLower.match(/(?:more than|greater than|>|>=|above)\s*([\d.]+)\s*(?:cgpa|gpa)/i) ||
+                           qLower.match(/(?:cgpa|gpa)\s*(?:>|>=|above|greater than|more than)\s*([\d.]+)/i);
+          
+          if (cgpaMatch) {
+            const minCGPA = Number(cgpaMatch[1]);
+            filtered = students.filter(r => {
+              const cgpa = Number(r['CGPA (3 sem)'] || 0);
+              return cgpa > minCGPA;
+            });
+          }
+          
+          const cgpaRangeMatch = qLower.match(/cgpa\s*between\s*([\d.]+)\s*and\s*([\d.]+)/i);
+          if (cgpaRangeMatch) {
+            const low = Number(cgpaRangeMatch[1]);
+            const high = Number(cgpaRangeMatch[2]);
+            filtered = students.filter(r => {
+              const cgpa = Number(r['CGPA (3 sem)'] || 0);
+              return cgpa >= low && cgpa <= high;
+            });
+          }
+        }
+
+        // ========== QUERY TYPE 6: COE students ==========
+        if (qLower.includes('ai/ml students') || qLower.includes('ai/ml coe')) {
+          filtered = students.filter(r => {
+            const coeName = String(r['COE NAME'] || '').toLowerCase().trim();
+            return coeName === 'ai/ml';
+          });
+        } else if (qLower.includes('web dev students') || qLower.includes('web dev coe')) {
+          filtered = students.filter(r => {
+            const coeName = String(r['COE NAME'] || '').toLowerCase().trim();
+            return coeName === 'web dev';
+          });
+        } else if (qLower.includes('cloud students') || qLower.includes('cloud coe')) {
+          filtered = students.filter(r => {
+            const coeName = String(r['COE NAME'] || '').toLowerCase().trim();
+            return coeName.includes('cloud');
+          });
+        } else if (qLower.includes('blockchain students') || qLower.includes('blockchain coe')) {
+          filtered = students.filter(r => {
+            const coeName = String(r['COE NAME'] || '').toLowerCase().trim();
+            return coeName === 'blockchain';
+          });
+        } else if (qLower.includes('fullstack students') || qLower.includes('fullstack coe')) {
+          filtered = students.filter(r => {
+            const coeName = String(r['COE NAME'] || '').toLowerCase().trim();
+            return coeName === 'fullstack';
+          });
+        }
+
+        // Additional filters
+        if (qLower.includes('girl') || qLower.includes('female')) {
+          filtered = filtered.filter(r => String(r.GENDER || '').toUpperCase() === 'F');
+        }
+        if (qLower.includes('boy') || qLower.includes('male')) {
+          filtered = filtered.filter(r => String(r.GENDER || '').toUpperCase() === 'M');
+        }
+
+        const sectionMatch = qLower.match(/section\s*([a-z])/i);
+        if (sectionMatch) {
+          filtered = filtered.filter(r => 
+            String(r.SECTION || '').toUpperCase() === sectionMatch[1].toUpperCase()
+          );
+        }
+
+        const techKeywords = ['genai', 'ai', 'ml', 'dl', 'mern', 'react', 'node', 'python', 
+                             'java', 'sde', 'fsd', 'cloud', 'devops', 'blockchain'];
+        const matchedTech = techKeywords.filter(kw => qLower.includes(kw));
+        if (matchedTech.length > 0 && !qLower.includes('students')) {
+          filtered = filtered.filter(r => {
+            const stack = String(r['KNOWN TECH STACK'] || '').toLowerCase();
+            return matchedTech.some(kw => stack.includes(kw));
+          });
+        }
+
+        // ========== Results ==========
+        if (filtered.length === 0) {
+          return {
+            type: 'empty',
+            data: [],
+            summary: `No students found for "${question}"`,
+            columns: []
+          };
+        }
+
+        const relevantColumns = getRelevantColumns(question, headers);
+
+        return {
+          type: 'table',
+          data: filtered,
+          summary: `${filtered.length} student${filtered.length > 1 ? 's' : ''} found`,
+          columns: relevantColumns
+        };
+      }, [getRelevantColumns]);
+
+      const handleSearch = useCallback(() => {
+        if (!question.trim()) return;
+        
+        setLoading(true);
+        setTimeout(() => {
+          const res = parseAndExecuteQuery(question);
+          setResults(res);
+          setLoading(false);
+        }, 200);
+      }, [question, parseAndExecuteQuery]);
+
+      const handleKeyDown = useCallback((e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          handleSearch();
+        }
+      }, [handleSearch]);
+
+      const downloadCSV = useCallback(() => {
+        if (results.type !== 'table' || !results.data.length) return;
+        
+        const headers = dataRef.current.headers;
+        const csvRows = [headers.map(h => `"${h.replace(/"/g, '""')}"`).join(',')];
+        
+        results.data.forEach(row => {
+          csvRows.push(headers.map(h => {
+            const val = String(row[h] || '').replace(/"/g, '""');
+            return `"${val}"`;
+          }).join(','));
+        });
+        
+        const csv = csvRows.join('\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `arc-students-${Date.now()}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }, [results]);
+
+      const exampleQueries = [
+        'Kani J details',
+        'Top 50 leetcode count',
+        'Top 10 CGPA',
+        'Students with more than 3 LC badges',
+        'Students with more than 9 cgpa',
+        'AI/ML students'
+      ];
+
+      return (
+        <div className="min-h-screen py-12 px-4 sm:px-6 lg:px-8">
+          <div className="max-w-7xl mx-auto">
+            
+            {/* Header */}
+            <div className="text-center mb-12" style={{animation: 'fadeIn 0.8s ease-out'}}>
+              <h1 className="text-6xl md:text-7xl font-black gradient-text mb-4">
+                Arc Student NLP Search
+              </h1>
+              <p className="text-xl md:text-2xl text-gray-700 font-medium">
+                Upload Excel → Ask natural questions → Get CSV instantly <span className="emoji">✨</span>
+              </p>
+            </div>
+
+            {/* Main Grid */}
+            <div className="grid lg:grid-cols-2 gap-8 mb-12">
+              
+              {/* Upload Card */}
+              <div className="bg-white/95 backdrop-blur-xl rounded-3xl p-8 card-shadow" style={{animation: 'slideIn 0.6s ease-out'}}>
+                <h2 className="text-2xl font-bold mb-6 text-gray-800 flex items-center">
+                  <span className="emoji mr-3 text-3xl">📊</span> Upload Excel
+                </h2>
+                
+                <label className="block w-full p-10 border-3 border-dashed border-indigo-300 rounded-2xl text-center hover:border-indigo-500 focus-within:border-indigo-600 transition-all cursor-pointer bg-gradient-to-br from-indigo-50 to-purple-50 hover:from-indigo-100 hover:to-purple-100">
+                  <input
+                    type="file"
+                    accept=".xlsx,.xls"
+                    onChange={handleFileUpload}
+                    disabled={loading}
+                    className="hidden"
+                  />
+                  <div className="text-indigo-700 font-bold text-xl mb-2">
+                    <span className="emoji text-4xl">📁</span>
+                  </div>
+                  <div className="text-indigo-600 font-semibold text-lg">
+                    {fileName || 'Choose File'}
+                  </div>
+                  <div className="text-gray-500 text-sm mt-2">
+                    {fileName ? 'Click to change file' : 'No file chosen'}
+                  </div>
+                </label>
+
+                {data.data.length > 0 && (
+                  <div className="mt-6 p-5 bg-gradient-to-r from-green-50 to-emerald-50 border-2 border-green-300 rounded-2xl" style={{animation: 'fadeIn 0.5s ease-out'}}>
+                    <div className="flex items-center">
+                      <span className="w-4 h-4 bg-green-500 rounded-full mr-4" style={{animation: 'pulse 2s infinite'}}></span>
+                      <div>
+                        <p className="font-bold text-green-900 text-lg flex items-center">
+                          <span className="emoji mr-2">✅</span> {data.data.length} students loaded
+                        </p>
+                        <p className="text-sm text-green-800 mt-1">{data.headers.length} columns • Ready to query</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Query Card */}
+              <div className="bg-white/95 backdrop-blur-xl rounded-3xl p-8 card-shadow" style={{animation: 'slideIn 0.8s ease-out'}}>
+                <h2 className="text-2xl font-bold mb-6 text-gray-800 flex items-center">
+                  <span className="emoji mr-3 text-3xl">🔍</span> Ask Question
+                </h2>
+                
+                <textarea
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder=""
+                  rows="6"
+                  className="w-full p-5 border-2 border-gray-300 rounded-2xl focus:ring-4 focus:ring-indigo-500/30 focus:border-indigo-500 resize-vertical text-base font-medium leading-relaxed shadow-inner"
+                />
+
+                <button
+                  onClick={handleSearch}
+                  disabled={!data.data.length || loading || !question.trim()}
+                  className="w-full mt-5 bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 hover:from-indigo-700 hover:via-purple-700 hover:to-pink-700 text-white py-5 px-6 rounded-2xl font-bold text-xl shadow-xl hover:shadow-2xl focus:outline-none focus:ring-4 focus:ring-purple-500/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 flex items-center justify-center"
+                >
+                  {loading ? (
+                    <>
+                      <svg className="animate-spin -ml-1 mr-3 h-6 w-6" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+                      </svg>
+                      Searching...
+                    </>
+                  ) : (
+                    <>
+                      <span className="emoji mr-3 text-2xl">🔍</span> Search Students
+                    </>
+                  )}
+                </button>
+
+                {/* Example queries */}
+                <div className="mt-6 pt-6 border-t-2 border-gray-200">
+                  <p className="text-sm font-bold text-gray-700 mb-4 flex items-center">
+                    <span className="emoji mr-2">⚡</span> Quick Examples
+                  </p>
+                  <div className="grid grid-cols-1 gap-2">
+                    {exampleQueries.map((ex, i) => (
+                      <button
+                        key={i}
+                        onClick={() => setQuestion(ex)}
+                        className="px-4 py-3 bg-gradient-to-r from-indigo-100 to-purple-100 hover:from-indigo-200 hover:to-purple-200 text-indigo-900 text-sm rounded-xl font-semibold transition-all border border-indigo-200 text-left hover:shadow-md hover:scale-[1.02]"
+                      >
+                        {ex}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Results Section */}
+            {results.summary && (
+              <div className="bg-white/95 backdrop-blur-xl rounded-3xl p-10 card-shadow" style={{animation: 'fadeIn 0.6s ease-out'}}>
+                
+                {results.type === 'empty' ? (
+                  <div className="text-center py-16">
+                    <div className="w-24 h-24 mx-auto mb-8 bg-gradient-to-br from-orange-400 to-red-500 rounded-full flex items-center justify-center shadow-2xl" style={{animation: 'fadeIn 0.5s ease-out'}}>
+                      <span className="text-5xl emoji">😅</span>
+                    </div>
+                    <h3 className="text-3xl font-black text-gray-900 mb-4">{results.summary}</h3>
+                    <p className="text-gray-600 text-lg">Try one of the example queries above</p>
+                  </div>
+                  
+                ) : results.type === 'field' ? (
+                  <div className="max-w-2xl mx-auto">
+                    <div className="details-card">
+                      <h2 className="text-3xl font-black mb-6 flex items-center">
+                        <span className="emoji mr-3">👤</span> {results.summary.name}
+                      </h2>
+                      <div className="detail-item">
+                        <div className="text-sm opacity-90 mb-1">{results.summary.field}</div>
+                        <div className="text-2xl font-bold">{results.summary.value}</div>
+                      </div>
+                    </div>
+                  </div>
+                  
+                ) : results.type === 'details' ? (
+                  <div className="max-w-6xl mx-auto">
+                    <div className="details-card mb-6">
+                      <h2 className="text-4xl font-black mb-2 flex items-center">
+                        <span className="emoji mr-4">📋</span> Complete Profile
+                      </h2>
+                      <p className="text-xl opacity-90">{results.summary}</p>
+                    </div>
+                    
+                    <div className="grid md:grid-cols-3 gap-4">
+                      {results.columns.map((col, i) => {
+                        const value = results.data[0][col];
+                        if (!value || value === '—') return null;
+                        
+                        return (
+                          <div key={i} className="bg-gradient-to-br from-white to-indigo-50 border-2 border-indigo-200 rounded-2xl p-5 hover:shadow-lg transition-all" style={{animation: `fadeIn ${0.05 * i}s ease-out`}}>
+                            <div className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-2">{col}</div>
+                            <div className="text-base font-semibold text-gray-900 break-words">{value}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  
+                ) : (
+                  <>
+                    <div className="flex flex-wrap items-center justify-between mb-8 gap-6">
+                      <div>
+                        <h2 className="text-4xl font-black gradient-text mb-2 flex items-center">
+                          <span className="emoji mr-4">✅</span> {results.summary}
+                        </h2>
+                        <p className="text-lg text-gray-600">
+                          for query: <span className="font-mono bg-indigo-100 px-3 py-1 rounded-lg text-indigo-900">"{question}"</span>
+                        </p>
+                      </div>
+                      
+                      <button
+                        onClick={downloadCSV}
+                        className="bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white px-10 py-5 rounded-2xl font-bold text-lg shadow-xl hover:shadow-2xl transition-all duration-300 flex items-center hover:scale-105"
+                      >
+                        <span className="emoji mr-3 text-2xl">📥</span> Download CSV ({results.data.length})
+                      </button>
+                    </div>
+
+                    <div className="overflow-hidden rounded-3xl border-4 border-indigo-200 shadow-2xl">
+                      <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
+                        <table className="w-full table-auto bg-white">
+                          <thead className="sticky top-0 z-10">
+                            <tr className="bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600">
+                              {results.columns.map((h, i) => (
+                                <th key={i} className="px-6 py-5 text-left font-bold text-sm text-white uppercase tracking-wider whitespace-nowrap" title={h}>
+                                  {h}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {results.data.map((row, idx) => (
+                              <tr key={idx} className="table-row-hover transition-all duration-200 border-b border-gray-100" style={{animation: `slideIn ${0.02 * idx}s ease-out`}}>
+                                {results.columns.map((h, colIdx) => (
+                                  <td key={colIdx} className="px-6 py-4 text-sm font-medium text-gray-900 max-w-xs" title={String(row[h] || '')}>
+                                    <div className="truncate">
+                                      {h === 'RANK' ? (
+                                        <span className={`rank-badge ${
+                                          row[h] === 1 ? 'bg-yellow-400 text-yellow-900' :
+                                          row[h] === 2 ? 'bg-gray-300 text-gray-800' :
+                                          row[h] === 3 ? 'bg-orange-400 text-orange-900' :
+                                          'bg-indigo-500 text-white'
+                                        }`}>
+                                          {row[h] === 1 ? '🥇' : row[h] === 2 ? '🥈' : row[h] === 3 ? '🥉' : row[h]}
+                                        </span>
+                                      ) : h === 'CGPA (3 sem)' && row[h] ? (
+                                        <span className={`badge ${Number(row[h]) >= 9 ? 'bg-green-500 text-white' : Number(row[h]) >= 8 ? 'bg-blue-500 text-white' : 'bg-gray-300 text-gray-800'}`}>
+                                          {row[h]} ⭐
+                                        </span>
+                                      ) : h === 'LC BADGES' && row[h] ? (
+                                        <span className="badge bg-yellow-400 text-yellow-900">
+                                          {row[h]} 🏆
+                                        </span>
+                                      ) : h === 'LC TOTAL' && row[h] ? (
+                                        <span className="font-bold text-indigo-700">{Number(row[h]).toLocaleString()}</span>
+                                      ) : (
+                                        String(row[h] || '—')
+                                      )}
+                                    </div>
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    <div className="mt-8 text-center p-6 bg-gradient-to-r from-indigo-50 to-purple-50 rounded-2xl border-2 border-indigo-200">
+                      <p className="text-lg font-bold text-indigo-900 mb-2 flex items-center justify-center">
+                        <span className="emoji mr-2">📊</span> Showing all {results.data.length} matching student{results.data.length > 1 ? 's' : ''}
+                      </p>
+                      <p className="text-sm text-indigo-700">
+                        {results.columns.length} relevant columns displayed • Download CSV for complete data (all 51 columns)
+                      </p>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
