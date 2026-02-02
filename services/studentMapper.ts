@@ -1,0 +1,180 @@
+import type { StudentRecord } from "../types";
+import type { StudentRow } from "./arcData";
+
+/**
+ * Creates an empty StudentRecord with only basic identifying fields populated.
+ * All other fields use empty/zero defaults—no mock or placeholder data.
+ */
+function createEmptyStudentRecord(
+  regNo: string,
+  name: string,
+  section: string
+): StudentRecord {
+  const initials = name.trim() ? name.trim()[0].toUpperCase() : "";
+  return {
+    id: regNo || "",
+    regNo: regNo || "",
+    name: name || "",
+    dept: "",
+    year: 0,
+    section: section || "",
+    gender: "",
+    mobile: "",
+    altMobile: "",
+    officialEmail: "",
+    personalEmail: "",
+    currentAddress: "",
+    permanentAddress: "",
+    pincode: "",
+    state: "",
+    aadhar: "",
+    pan: "",
+    fatherName: "",
+    motherName: "",
+    tenthPercentage: 0,
+    twelfthPercentage: 0,
+    tenthYear: "",
+    twelfthYear: "",
+    gpaSem1: 0,
+    gpaSem2: 0,
+    gpaSem3: 0,
+    cgpaOverall: 0,
+    techStack: [],
+    resumeUrl: "",
+    relocate: "",
+    category: "",
+    placementStatus: "",
+    leetcodeId: "",
+    lcTotal: 0,
+    lcEasy: 0,
+    lcMed: 0,
+    lcHard: 0,
+    lcRating: 0,
+    lcBadges: 0,
+    lcMax: 0,
+    codechefId: "",
+    ccTotal: 0,
+    ccRank: "",
+    ccBadges: 0,
+    ccRating: 0,
+    srProblems: 0,
+    srRank: "",
+    github: "",
+    linkedin: "",
+    initials,
+    coeName: "",
+    coeIncharge: "",
+    coeProjects: "",
+    isHosteller: false,
+  };
+}
+
+export function mapStudentRowToRecord(row: StudentRow): StudentRecord {
+  const safe = (v: any, fallback: any) =>
+    v === null || v === undefined ? fallback : v;
+  const base = createEmptyStudentRecord(
+    safe(row.reg_no, ""),
+    safe(row.name, ""),
+    safe(row.section, "")
+  );
+
+  const toNum = (v: any, fallback = 0) => {
+    if (v === null || v === undefined || v === "") return fallback;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  };
+
+  const toStr = (v: any, fallback = "") =>
+    v === null || v === undefined ? fallback : String(v);
+
+  const toBool = (v: any, fallback = false) => {
+    if (v === null || v === undefined) return fallback;
+    if (typeof v === "boolean") return v;
+    if (typeof v === "number") return v !== 0;
+    const s = String(v).toLowerCase();
+    return s === "true" || s === "1" || s === "yes";
+  };
+
+  const parseArray = (v: any): string[] => {
+    if (!v) return base.techStack ?? [];
+    if (Array.isArray(v)) return v.map((x) => String(x));
+    return String(v)
+      .split(/[,;|]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  };
+
+  return {
+    ...base,
+    id: toStr(safe(row.id, base.id)),
+    regNo: toStr(safe(row.reg_no, base.regNo)),
+    name: toStr(safe(row.name, base.name)),
+    dept: toStr(safe(row.dept, base.dept)),
+    year: toNum(safe(row.year, base.year)),
+    gender: toStr(safe(row.gender, base.gender)),
+    mobile: toStr(safe(row.mobile, base.mobile)),
+    altMobile: toStr(safe(row.alt_mobile, base.altMobile)),
+    officialEmail: toStr(safe(row.official_email, base.officialEmail)),
+    personalEmail: toStr(safe(row.personal_email, base.personalEmail)),
+
+    currentAddress: toStr(safe(row.current_address, base.currentAddress)),
+    permanentAddress: toStr(safe(row.permanent_address, base.permanentAddress)),
+    pincode: toStr(safe(row.pincode, base.pincode)),
+    state: toStr(safe(row.state, base.state)),
+    aadhar: toStr(safe(row.aadhar, base.aadhar)),
+    pan: toStr(safe(row.pan, base.pan)),
+    fatherName: toStr(safe(row.father_name, base.fatherName)),
+    motherName: toStr(safe(row.mother_name, base.motherName)),
+
+    tenthPercentage: toNum(safe(row.tenth_percentage, base.tenthPercentage)),
+    twelfthPercentage: toNum(
+      safe(row.twelfth_percentage, base.twelfthPercentage)
+    ),
+    tenthYear: toStr(safe(row.tenth_year, base.tenthYear)),
+    twelfthYear: toStr(safe(row.twelfth_year, base.twelfthYear)),
+
+    gpaSem1: toNum(safe(row.gpa_sem1, base.gpaSem1)),
+    gpaSem2: toNum(safe(row.gpa_sem2, base.gpaSem2)),
+    gpaSem3: toNum(safe(row.gpa_sem3, base.gpaSem3)),
+    cgpaOverall: toNum(safe(row.cgpa_overall, base.cgpaOverall)),
+
+    techStack: parseArray(
+      row.tech_stack ?? row.known_tech_stack ?? base.techStack
+    ),
+    resumeUrl: toStr(safe(row.resume_url, base.resumeUrl)),
+    relocate: toStr(safe(row.relocate, base.relocate)),
+    category: toStr(safe(row.category, base.category)),
+    placementStatus: toStr(safe(row.placement_status, base.placementStatus)),
+
+    leetcodeId: toStr(safe(row.leetcode_id, base.leetcodeId)),
+    lcTotal: toNum(safe(row.lc_total ?? row.lc_total_problems, base.lcTotal)),
+    lcEasy: toNum(safe(row.lc_easy, base.lcEasy)),
+    lcMed: toNum(safe(row.lc_med ?? row.lc_medium, base.lcMed)),
+    lcHard: toNum(safe(row.lc_hard, base.lcHard)),
+    lcRating: toNum(safe(row.lc_rating, base.lcRating)),
+    lcBadges: toNum(safe(row.lc_badges, base.lcBadges)),
+    lcMax: toNum(safe(row.lc_max ?? row.lc_max_rating, base.lcMax)),
+
+    codechefId: toStr(safe(row.codechef_id, base.codechefId)),
+    ccTotal: toNum(safe(row.cc_total, base.ccTotal)),
+    ccRank: toStr(safe(row.cc_rank, base.ccRank)),
+    ccBadges: toNum(safe(row.cc_badges, base.ccBadges)),
+    ccRating: toNum(safe(row.cc_rating, base.ccRating)),
+
+    srProblems: toNum(
+      safe(row.sr_problems ?? row.sr_problems_solved, base.srProblems)
+    ),
+    srRank: toStr(safe(row.sr_rank, base.srRank)),
+
+    github: toStr(
+      safe(row.github ?? row.github_id ?? row.github_link, base.github)
+    ),
+    linkedin: toStr(safe(row.linkedin ?? row.linkedin_url, base.linkedin)),
+
+    coeName: toStr(safe(row.coe_name, base.coeName)),
+    coeIncharge: toStr(safe(row.coe_incharge, base.coeIncharge)),
+    coeProjects: toStr(safe(row.coe_projects, base.coeProjects)),
+
+    isHosteller: toBool(safe(row.is_hosteller, base.isHosteller)),
+  };
+}

@@ -40,7 +40,6 @@ export const analyzeSecurity = async (password: string): Promise<SecurityAnalysi
     // Directly access .text property from GenerateContentResponse
     return JSON.parse(response.text || "{}") as SecurityAnalysis;
   } catch (error) {
-    console.error("Security analysis failed:", error);
     return {
       strength: 'moderate',
       feedback: 'Verification sub-routines offline. Proceed with caution.',
