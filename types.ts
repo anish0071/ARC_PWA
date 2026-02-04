@@ -20,7 +20,7 @@ export interface StudentRecord {
   regNo: string;
   name: string;
   dept: string;
-  year: number;
+  year: string;
   section: string;
   gender: string;
   mobile: string;

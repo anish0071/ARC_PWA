@@ -11,6 +11,8 @@ import {
   updateStudentByRegNo,
   broadcastNeedsUpdation,
   fetchStudentColumns,
+  fetchStudentsWithPendingUpdates,
+  checkAndAutoClearUpdates,
 } from "../services/arcData";
 import { mapStudentRowToRecord } from "../services/studentMapper";
 
@@ -101,7 +103,10 @@ export const Dashboard: React.FC<{
   const [selectedStudent, setSelectedStudent] = useState<StudentRecord | null>(
     null
   );
-  const [editedStudent, setEditedStudent] = useState<Record<string, any> | null>(null);
+  const [editedStudent, setEditedStudent] = useState<Record<
+    string,
+    any
+  > | null>(null);
   const [sortField, setSortField] = useState<keyof StudentRecord>("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [profileOpen, setProfileOpen] = useState(false);
@@ -112,14 +117,77 @@ export const Dashboard: React.FC<{
 
   // Modal states
   const [updationModalOpen, setUpdationModalOpen] = useState(false);
-  const [pruneModalOpen, setPruneModalOpen] = useState(false);
-  const [injectModalOpen, setInjectModalOpen] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportSelectedFields, setExportSelectedFields] = useState<string[]>([]);
 
   // Registry Data States
   const [registryFields, setRegistryFields] = useState(INITIAL_REGISTRY_FIELDS);
   const [selectedFields, setSelectedFields] = useState<string[]>([]);
-  const [newFieldName, setNewFieldName] = useState("");
-  const [activeUpdationFields, setActiveUpdationFields] = useState<string[]>([]);
+  const [activeUpdationFields, setActiveUpdationFields] = useState<string[]>(
+    []
+  );
+  const [pendingStudents, setPendingStudents] = useState<any[]>([]);
+  const [pendingStudentsTotal, setPendingStudentsTotal] = useState(0);
+  const [showPendingList, setShowPendingList] = useState(false);
+
+  // Organize registry fields with coding platforms first, then grouped by category
+  const organizedRegistryFields = useMemo(() => {
+    // Define priority keywords for coding platforms
+    // LC = LeetCode, CC = CodeChef, CF = Codeforces, SR = Skillrack
+    const codingKeywords = [
+      "LEETCODE",
+      "LC_",
+      "LC ",
+      "CODECHEF",
+      "CC_",
+      "CC ",
+      "CODEFORCES",
+      "CF_",
+      "CF ",
+      "SKILLRACK",
+      "SR_",
+      "SR ",
+      "GITHUB",
+      "LINKEDIN",
+    ];
+    const profileKeywords = [
+      "NAME",
+      "REG",
+      "DEPT",
+      "SECTION",
+      "YEAR",
+      "GENDER",
+      "MOBILE",
+      "MAIL",
+      "EMAIL",
+    ];
+    const academicKeywords = ["CGPA", "GPA", "SEM", "10TH", "12TH", "BOARD"];
+
+    const coding: { id: string; label: string; cat: string; raw?: string }[] =
+      [];
+    const profile: { id: string; label: string; cat: string; raw?: string }[] =
+      [];
+    const academic: { id: string; label: string; cat: string; raw?: string }[] =
+      [];
+    const other: { id: string; label: string; cat: string; raw?: string }[] =
+      [];
+
+    registryFields.forEach((field) => {
+      const label = field.label.toUpperCase();
+      const fieldWithRaw = { ...field, raw: (field as any).raw };
+      if (codingKeywords.some((kw) => label.includes(kw))) {
+        coding.push({ ...fieldWithRaw, cat: "🏆 Coding Platforms" });
+      } else if (profileKeywords.some((kw) => label.includes(kw))) {
+        profile.push({ ...fieldWithRaw, cat: "👤 Profile Info" });
+      } else if (academicKeywords.some((kw) => label.includes(kw))) {
+        academic.push({ ...fieldWithRaw, cat: "📚 Academics" });
+      } else {
+        other.push({ ...fieldWithRaw, cat: "📋 Other Fields" });
+      }
+    });
+
+    return [...coding, ...profile, ...academic, ...other];
+  }, [registryFields]);
 
   // Load student records for the active section from Supabase (or all for HOD)
   useEffect(() => {
@@ -127,23 +195,56 @@ export const Dashboard: React.FC<{
     let mounted2 = true;
     (async () => {
       if (!sectionName) return;
-      const active = await fetchNeedsUpdation(sectionName === 'ALL' ? '' : sectionName);
+      const active = await fetchNeedsUpdation(
+        sectionName === "ALL" ? "" : sectionName
+      );
       if (mounted2) setActiveUpdationFields(active || []);
 
       // fetch column names from students table and populate registryFields
       const cols = await fetchStudentColumns();
       if (mounted2 && Array.isArray(cols) && cols.length > 0) {
         // filter out metadata-like columns
-        const skip = new Set(['id', 'created_at', 'updated_at']);
+        const skip = new Set(["id", "created_at", "updated_at"]);
         const fields = cols
           .filter((c) => !skip.has(c.toLowerCase()))
           .map((c, idx) => ({
             id: `schema_${idx}_${c}`,
-            label: String(c).replace(/_/g, ' ').toUpperCase(),
-            cat: 'Schema',
+            label: String(c).replace(/_/g, " ").toUpperCase(),
+            cat: "Schema",
             raw: c,
           }));
         setRegistryFields(fields);
+      }
+
+      // Fetch students with pending updates and check for auto-clear
+      if (active && active.length > 0) {
+        const pendingResult = await fetchStudentsWithPendingUpdates(
+          sectionName === "ALL" ? "" : sectionName
+        );
+        if (mounted2) {
+          setPendingStudents(pendingResult.students || []);
+          setPendingStudentsTotal(pendingResult.totalStudents || 0);
+
+          // Auto-clear if all students have updated
+          if (
+            pendingResult.allComplete &&
+            pendingResult.totalStudents &&
+            pendingResult.totalStudents > 0
+          ) {
+            const clearResult = await checkAndAutoClearUpdates(
+              sectionName === "ALL" ? "" : sectionName
+            );
+            if (clearResult.cleared) {
+              setActiveUpdationFields([]);
+              setPendingStudents([]);
+            }
+          }
+        }
+      } else {
+        if (mounted2) {
+          setPendingStudents([]);
+          setPendingStudentsTotal(0);
+        }
       }
     })();
 
@@ -273,40 +374,39 @@ export const Dashboard: React.FC<{
 
   const labelToKey = (label: string) => {
     const map: Record<string, string> = {
-      'REG NO': 'regNo',
-      'NAME': 'name',
-      'DEPT': 'dept',
-      'YEAR': 'year',
-      'SECTION': 'section',
-      'GENDER': 'gender',
-      'MOBILE NO': 'mobile',
-      'ALT MOBILE NO': 'altMobile',
-      'OFFICIAL MAIL': 'officialEmail',
-      'EMAIL': 'personalEmail',
-      'CURRENT ADDRESS': 'currentAddress',
-      'PERMANENT ADDRESS': 'permanentAddress',
-      'PINCODE': 'pincode',
-      'STATE': 'state',
-      'AADHAR NO': 'aadhar',
-      'PAN NO': 'pan',
-      'FATHER NAME': 'fatherName',
-      'MOTHER NAME': 'motherName',
-      '10TH BOARD %': 'tenthPercentage',
-      '12TH BOARD %': 'twelfthPercentage',
-      '10TH YEAR': 'tenthYear',
-      '12TH YEAR': 'twelfthYear',
-      'CGPA (3 sem)': 'cgpaOverall',
-      'RESIDENCY STATUS': 'isHosteller',
-      'GITHUB ID': 'github',
-      'LINKEDIN': 'linkedin',
-      'RESUME LINK': 'resumeUrl',
+      "REG NO": "regNo",
+      NAME: "name",
+      DEPT: "dept",
+      YEAR: "year",
+      SECTION: "section",
+      GENDER: "gender",
+      "MOBILE NO": "mobile",
+      "ALT MOBILE NO": "altMobile",
+      "OFFICIAL MAIL": "officialEmail",
+      EMAIL: "personalEmail",
+      "CURRENT ADDRESS": "currentAddress",
+      "PERMANENT ADDRESS": "permanentAddress",
+      PINCODE: "pincode",
+      STATE: "state",
+      "AADHAR NO": "aadhar",
+      "PAN NO": "pan",
+      "FATHER NAME": "fatherName",
+      "MOTHER NAME": "motherName",
+      "10TH BOARD %": "tenthPercentage",
+      "12TH BOARD %": "twelfthPercentage",
+      "10TH YEAR": "tenthYear",
+      "12TH YEAR": "twelfthYear",
+      "CGPA (3 sem)": "cgpaOverall",
+      "RESIDENCY STATUS": "isHosteller",
+      "GITHUB ID": "github",
+      LINKEDIN: "linkedin",
+      "RESUME LINK": "resumeUrl",
     };
     return map[label] || label.replace(/[^a-z0-9]/gi, "").toLowerCase();
   };
 
   const clearSelections = () => {
     setSelectedFields([]);
-    setNewFieldName("");
   };
 
   return (
@@ -561,23 +661,13 @@ export const Dashboard: React.FC<{
                 }}
               />
               <AiryCommandBtn
-                label="DYNAMIC INJECT"
-                icon="+"
-                sub="Extend Matrix"
-                color="bg-violet-600"
+                label="EXPORT CSV"
+                icon="📊"
+                sub="Download Data"
+                color="bg-emerald-600"
                 onClick={() => {
-                  clearSelections();
-                  setInjectModalOpen(true);
-                }}
-              />
-              <AiryCommandBtn
-                label="PRUNE NODES"
-                icon="🗑️"
-                sub="Remove Data"
-                color="bg-rose-600"
-                onClick={() => {
-                  clearSelections();
-                  setPruneModalOpen(true);
+                  setExportSelectedFields([]);
+                  setExportModalOpen(true);
                 }}
               />
             </div>
@@ -592,7 +682,7 @@ export const Dashboard: React.FC<{
             className="absolute inset-0 bg-slate-950/80 backdrop-blur-xl"
             onClick={() => setSelectedStudent(null)}
           ></div>
-                <div className="relative bg-white w-full max-w-5xl rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col md:flex-row max-h-[90vh] animate-in zoom-in-95 duration-300">
+          <div className="relative bg-white w-full max-w-5xl rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col md:flex-row max-h-[90vh] animate-in zoom-in-95 duration-300">
             <div className="w-full md:w-72 bg-slate-50 border-r border-slate-100 p-8 flex flex-col items-center">
               <div className="relative group mb-6">
                 <div className="absolute -inset-2 bg-gradient-to-br from-violet-600 to-indigo-700 rounded-[2rem] blur opacity-20 group-hover:opacity-40 transition duration-1000"></div>
@@ -601,7 +691,7 @@ export const Dashboard: React.FC<{
                 </div>
               </div>
 
-              <h2 className="text-xl font-black text-slate-900 tracking-tight uppercase text-center mb-1 leading-tight">
+              <h2 className="text-xl font-black text-slate-900 tracking-tight uppercase text-center w-full break-words px-2 mb-1 leading-tight">
                 {selectedStudent.name}
               </h2>
               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-10">
@@ -660,7 +750,7 @@ export const Dashboard: React.FC<{
               </div>
             </div>
 
-              <div className="flex-1 p-10 overflow-y-auto custom-scrollbar relative">
+            <div className="flex-1 p-10 overflow-y-auto custom-scrollbar relative">
               <button
                 onClick={() => setSelectedStudent(null)}
                 className="absolute top-6 right-6 p-2 hover:bg-slate-50 rounded-xl transition-all active:scale-90 group"
@@ -728,9 +818,19 @@ export const Dashboard: React.FC<{
                       <AiryDataItem
                         label="Official Mail Relay"
                         value={selectedStudent.officialEmail}
-                        editable={activeUpdationFields.includes('OFFICIAL MAIL')}
-                        editValue={editedStudent?.officialEmail ?? selectedStudent.officialEmail}
-                        onEdit={(v: any) => setEditedStudent((p) => ({ ...(p || selectedStudent), officialEmail: v }))}
+                        editable={activeUpdationFields.includes(
+                          "OFFICIAL MAIL"
+                        )}
+                        editValue={
+                          editedStudent?.officialEmail ??
+                          selectedStudent.officialEmail
+                        }
+                        onEdit={(v: any) =>
+                          setEditedStudent((p) => ({
+                            ...(p || selectedStudent),
+                            officialEmail: v,
+                          }))
+                        }
                       />
                       <AiryDataItem
                         label="Personal Mail Relay"
@@ -742,16 +842,32 @@ export const Dashboard: React.FC<{
                         label="Primary Contact"
                         value={selectedStudent.mobile}
                         highlight
-                        editable={activeUpdationFields.includes('MOBILE NO')}
-                        editValue={editedStudent?.mobile ?? selectedStudent.mobile}
-                        onEdit={(v: any) => setEditedStudent((p) => ({ ...(p || selectedStudent), mobile: v }))}
+                        editable={activeUpdationFields.includes("MOBILE NO")}
+                        editValue={
+                          editedStudent?.mobile ?? selectedStudent.mobile
+                        }
+                        onEdit={(v: any) =>
+                          setEditedStudent((p) => ({
+                            ...(p || selectedStudent),
+                            mobile: v,
+                          }))
+                        }
                       />
                       <AiryDataItem
                         label="Emergency Contact"
                         value={selectedStudent.altMobile}
-                        editable={activeUpdationFields.includes('ALT MOBILE NO')}
-                        editValue={editedStudent?.altMobile ?? selectedStudent.altMobile}
-                        onEdit={(v: any) => setEditedStudent((p) => ({ ...(p || selectedStudent), altMobile: v }))}
+                        editable={activeUpdationFields.includes(
+                          "ALT MOBILE NO"
+                        )}
+                        editValue={
+                          editedStudent?.altMobile ?? selectedStudent.altMobile
+                        }
+                        onEdit={(v: any) =>
+                          setEditedStudent((p) => ({
+                            ...(p || selectedStudent),
+                            altMobile: v,
+                          }))
+                        }
                       />
                     </div>
                   </div>
@@ -960,35 +1076,70 @@ export const Dashboard: React.FC<{
             </div>
 
             <div className="flex-1 overflow-y-auto custom-scrollbar pr-4">
-              <div className="space-y-3">
-                {registryFields.map((field) => (
-                  <label
-                    key={field.id}
-                    className="flex items-center justify-between p-3 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors"
-                  >
-                    <div className="flex items-center gap-4">
-                      <input
-                        type="checkbox"
-                        checked={selectedFields.includes(field.id)}
-                        onChange={() => toggleFieldSelection(field.id)}
-                        className="w-5 h-5 rounded border-slate-200 text-violet-600 focus:ring-violet-500/20"
-                      />
-                      <div className="flex flex-col">
-                        <span className={`text-[11px] font-black uppercase ${
-                          selectedFields.includes(field.id) ? 'text-violet-600' : 'text-slate-800'
-                        }`}>{field.label}</span>
-                        <span className="text-[8px] font-bold text-slate-400 uppercase">
-                          {field.cat}
+              {/* Group fields by category */}
+              {(() => {
+                const groupedFields: Record<
+                  string,
+                  typeof organizedRegistryFields
+                > = {};
+                organizedRegistryFields.forEach((field) => {
+                  if (!groupedFields[field.cat]) groupedFields[field.cat] = [];
+                  groupedFields[field.cat].push(field);
+                });
+
+                return Object.entries(groupedFields).map(
+                  ([category, fields]) => (
+                    <div key={category} className="mb-6">
+                      <div className="flex items-center gap-2 mb-3 sticky top-0 bg-white py-2 z-10">
+                        <span className="text-lg">
+                          {category.split(" ")[0]}
+                        </span>
+                        <h4 className="text-[11px] font-black text-slate-600 uppercase tracking-wider">
+                          {category.split(" ").slice(1).join(" ")}
+                        </h4>
+                        <span className="text-[9px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
+                          {fields.length}
                         </span>
                       </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                        {fields.map((field) => (
+                          <label
+                            key={field.id}
+                            className={`flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all border-2 ${
+                              selectedFields.includes(field.id)
+                                ? "bg-violet-50 border-violet-300 shadow-sm"
+                                : "bg-slate-50 border-transparent hover:bg-slate-100"
+                            }`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <input
+                                type="checkbox"
+                                checked={selectedFields.includes(field.id)}
+                                onChange={() => toggleFieldSelection(field.id)}
+                                className="w-5 h-5 rounded border-slate-300 text-violet-600 focus:ring-violet-500/20"
+                              />
+                              <span
+                                className={`text-[11px] font-black uppercase ${
+                                  selectedFields.includes(field.id)
+                                    ? "text-violet-600"
+                                    : "text-slate-700"
+                                }`}
+                              >
+                                {field.label}
+                              </span>
+                            </div>
+                            {field.raw && (
+                              <span className="text-[8px] text-slate-400 font-mono bg-slate-100 px-1.5 py-0.5 rounded">
+                                {field.raw}
+                              </span>
+                            )}
+                          </label>
+                        ))}
+                      </div>
                     </div>
-                    <div className="text-[9px] text-slate-400">
-                      {/* show raw column name for schema-derived fields */}
-                      {field.raw ? field.raw : ''}
-                    </div>
-                  </label>
-                ))}
-              </div>
+                  )
+                );
+              })()}
             </div>
             <div className="mt-10 flex gap-4">
               <button
@@ -999,20 +1150,33 @@ export const Dashboard: React.FC<{
                     return;
                   }
 
-                  // map selectedFields ids -> labels
-                  const labels = registryFields
+                  // map selectedFields ids -> labels using organizedRegistryFields
+                  const labels = organizedRegistryFields
                     .filter((f) => selectedFields.includes(f.id))
                     .map((f) => f.label);
 
-                  const res = await setNeedsUpdation(sectionName === 'ALL' ? '' : sectionName, labels);
+                  const res = await setNeedsUpdation(
+                    sectionName === "ALL" ? "" : sectionName,
+                    labels
+                  );
                   if (res && res.success) {
                     setActiveUpdationFields(labels);
                     // best-effort: broadcast a notification to students in this section
                     try {
-                      await broadcastNeedsUpdation(sectionName === 'ALL' ? '' : sectionName, labels);
+                      await broadcastNeedsUpdation(
+                        sectionName === "ALL" ? "" : sectionName,
+                        labels
+                      );
                     } catch (e) {
-                      console.warn('broadcastNeedsUpdation failed:', e);
+                      console.warn("broadcastNeedsUpdation failed:", e);
                     }
+                    
+                    // Fetch pending students after broadcast to update the UI
+                    const pendingResult = await fetchStudentsWithPendingUpdates(
+                      sectionName === "ALL" ? "" : sectionName
+                    );
+                    setPendingStudents(pendingResult.students || []);
+                    setPendingStudentsTotal(pendingResult.totalStudents || 0);
                   }
                   setUpdationModalOpen(false);
                 }}
@@ -1034,156 +1198,500 @@ export const Dashboard: React.FC<{
         </div>
       )}
 
-      {/* Cancel active updation (admin action) */}
+      {/* Cancel active updation (admin action) - show current fields above cancel button */}
       {activeUpdationFields.length > 0 && (
-        <div className="fixed bottom-6 right-6">
-          <button
-            onClick={async () => {
-              if (!sectionName) return;
-              const res = await clearNeedsUpdation(sectionName === 'ALL' ? '' : sectionName);
-              if (res && res.success) setActiveUpdationFields([]);
-            }}
-            className="py-3 px-4 bg-rose-600 text-white rounded-2xl font-black text-[11px] uppercase tracking-widest shadow-lg"
-          >
-            Cancel Active Updation
-          </button>
-        </div>
-      )}
-
-      {/* Prune Logic Modal */}
-      {pruneModalOpen && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
-          <div
-            className="absolute inset-0 bg-slate-950/90 backdrop-blur-xl"
-            onClick={() => setPruneModalOpen(false)}
-          ></div>
-          <div className="relative bg-white w-full max-w-2xl rounded-[2.5rem] p-10 shadow-3xl max-h-[85vh] flex flex-col animate-in zoom-in-95">
-            <div className="flex items-center gap-4 mb-8">
-              <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center text-2xl font-black">
-                🗑️
-              </div>
-              <div>
-                <h3 className="text-xl font-black uppercase text-slate-900 leading-none">
-                  Prune Logic Nodes
-                </h3>
-                <p className="text-[10px] font-black text-rose-400 uppercase tracking-widest mt-1">
-                  Select fields to remove from the registry schema
-                </p>
+        <div className="fixed bottom-6 right-6 max-w-md z-[100]">
+          <div className="bg-white rounded-2xl shadow-2xl border border-indigo-200 overflow-hidden">
+            <div className="bg-gradient-to-r from-indigo-600 to-violet-600 px-4 py-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 bg-white rounded-full animate-pulse"></span>
+                  <h4 className="text-[10px] font-black text-white uppercase tracking-widest">
+                    Active Update Request
+                  </h4>
+                </div>
+                <button
+                  onClick={async () => {
+                    // Refresh pending students
+                    const result = await fetchStudentsWithPendingUpdates(
+                      sectionName === "ALL" ? "" : sectionName
+                    );
+                    setPendingStudents(result.students || []);
+                    setPendingStudentsTotal(result.totalStudents || 0);
+                    if (result.allComplete && result.totalStudents > 0) {
+                      const clearResult = await checkAndAutoClearUpdates(
+                        sectionName === "ALL" ? "" : sectionName
+                      );
+                      if (clearResult.cleared) {
+                        setActiveUpdationFields([]);
+                        setPendingStudents([]);
+                      }
+                    }
+                  }}
+                  className="text-white/80 hover:text-white text-[9px] font-bold"
+                >
+                  🔄 Refresh
+                </button>
               </div>
             </div>
-
-            <div className="flex-1 overflow-y-auto custom-scrollbar pr-4 space-y-2 mb-8">
-              <h4 className="text-[9px] font-black text-slate-300 uppercase tracking-[0.2em] mb-4">
-                Registry Logic Fields
-              </h4>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {registryFields.map((field) => (
-                  <label
-                    key={field.id}
-                    className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl group cursor-pointer border border-transparent hover:border-rose-100 transition-all"
+            <div className="p-4">
+              <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-3">
+                Fields requiring update ({activeUpdationFields.length})
+              </p>
+              <div
+                className="flex flex-wrap gap-2 mb-4"
+                style={{ maxWidth: "320px" }}
+              >
+                {activeUpdationFields.map((field, idx) => (
+                  <span
+                    key={idx}
+                    className="px-2 py-1 bg-indigo-50 text-indigo-600 text-[9px] font-black uppercase rounded-lg border border-indigo-100"
+                    style={{ wordBreak: "break-word" }}
                   >
-                    <div className="flex items-center gap-4">
-                      <input
-                        type="checkbox"
-                        checked={selectedFields.includes(field.id)}
-                        onChange={() => toggleFieldSelection(field.id)}
-                        className="w-5 h-5 rounded border-slate-200 text-rose-600 focus:ring-rose-500/20"
-                      />
-                      <div className="flex flex-col">
-                        <span
-                          className={`text-[11px] font-black uppercase transition-colors ${
-                            selectedFields.includes(field.id)
-                              ? "text-rose-600"
-                              : "text-slate-800"
-                          }`}
-                        >
-                          {field.label}
-                        </span>
-                        <span className="text-[8px] font-bold text-slate-400 uppercase">
-                          {field.cat} Hub
-                        </span>
-                      </div>
-                    </div>
-                  </label>
+                    {field}
+                  </span>
                 ))}
               </div>
-            </div>
 
-            <div className="flex gap-4">
+              {/* Pending students indicator */}
               <button
-                onClick={() => setPruneModalOpen(false)}
-                className="flex-1 py-5 bg-rose-600 text-white rounded-2xl text-[11px] font-black uppercase tracking-widest shadow-xl hover:bg-rose-700 active:scale-95 transition-all"
+                onClick={() => setShowPendingList(true)}
+                className="mb-4 p-3 bg-slate-50 rounded-xl border border-slate-200 w-full text-left hover:bg-slate-100 transition-colors cursor-pointer"
               >
-                Execute Pruning
+                <div className="flex items-center justify-between mb-2">
+                    <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">
+                      Update Status
+                    </span>
+                    {
+                      (() => {
+                        const total = (pendingStudentsTotal && pendingStudentsTotal > 0) ? pendingStudentsTotal : (students.length || 0);
+                        let completed = 0;
+                        if ((pendingStudentsTotal === 0 || !pendingStudentsTotal) && (!pendingStudents || pendingStudents.length === 0)) {
+                          completed = 0;
+                        } else {
+                          completed = Math.max(0, total - (pendingStudents?.length || 0));
+                        }
+                        const badgeClass = (pendingStudents && pendingStudents.length === 0) ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600';
+                        return (
+                          <span className={`text-[10px] font-black px-2 py-0.5 rounded-lg ${badgeClass}`}>
+                            {completed} / {total} done
+                          </span>
+                        );
+                      })()
+                    }
+                  </div>
+                {pendingStudents.length > 0 && (
+                  <div className="w-full py-2 bg-amber-500 text-white rounded-lg font-black text-[9px] uppercase tracking-widest text-center">
+                    View {pendingStudents.length} Pending Student
+                    {pendingStudents.length > 1 ? "s" : ""}
+                  </div>
+                )}
+                {pendingStudents.length === 0 && pendingStudentsTotal > 0 && (
+                  <p className="text-[10px] text-emerald-600 font-bold text-center">
+                    ✓ All students have updated!
+                  </p>
+                )}
               </button>
+
               <button
-                onClick={() => setPruneModalOpen(false)}
-                className="flex-1 py-5 bg-slate-100 text-slate-400 rounded-2xl text-[11px] font-black uppercase tracking-widest hover:bg-slate-200 active:scale-95 transition-all"
+                onClick={async () => {
+                  if (!sectionName) return;
+                  const res = await clearNeedsUpdation(
+                    sectionName === "ALL" ? "" : sectionName
+                  );
+                  if (res && res.success) {
+                    setActiveUpdationFields([]);
+                    setPendingStudents([]);
+                  }
+                }}
+                className="w-full py-3 bg-rose-600 text-white rounded-xl font-black text-[10px] uppercase tracking-widest shadow-lg hover:bg-rose-700 active:scale-95 transition-all"
               >
-                Cancel
+                Cancel Active Updation
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Dynamic Inject Modal */}
-      {injectModalOpen && (
+      {/* Pending Students Modal */}
+      {showPendingList && (
+        <div className="fixed inset-0 z-[250] flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-slate-950/90 backdrop-blur-xl"
+            onClick={() => setShowPendingList(false)}
+          ></div>
+          <div className="relative bg-white w-full max-w-2xl rounded-[2rem] shadow-3xl max-h-[85vh] flex flex-col animate-in zoom-in-95">
+            <div className="bg-gradient-to-r from-amber-500 to-orange-500 p-6 rounded-t-[2rem]">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">⚠️</span>
+                  <div>
+                    <h3 className="text-lg font-black text-white uppercase">
+                      Pending Updates
+                    </h3>
+                    <p className="text-[10px] font-bold text-white/80 uppercase tracking-widest">
+                      {pendingStudents.length} of {pendingStudentsTotal}{" "}
+                      students have not updated
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowPendingList(false)}
+                  className="text-white/70 hover:text-white"
+                >
+                  <svg
+                    className="w-6 h-6"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2.5"
+                      d="M6 18L18 6M6 6l12 12"
+                    />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6 space-y-3">
+              {pendingStudents.map((student, idx) => (
+                <div
+                  key={student.reg_no || idx}
+                  className="p-4 bg-slate-50 rounded-2xl border border-slate-200"
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <div>
+                      <p className="text-sm font-black text-slate-900">
+                        {student.name || "Unknown"}
+                      </p>
+                      <p className="text-[10px] font-bold text-slate-400 uppercase">
+                        {student.reg_no}
+                      </p>
+                    </div>
+                    <span className="text-[9px] font-black px-2 py-1 bg-rose-100 text-rose-600 rounded-lg">
+                      {student.completedCount || 0} /{" "}
+                      {student.totalRequired || 0} fields
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {(student.missingFields || []).map(
+                      (field: string, fidx: number) => (
+                        <span
+                          key={fidx}
+                          className="px-2 py-0.5 bg-rose-50 text-rose-500 text-[8px] font-bold uppercase rounded border border-rose-100"
+                          style={{ wordBreak: "break-word" }}
+                        >
+                          {field}
+                        </span>
+                      )
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="p-4 border-t border-slate-100">
+              <button
+                onClick={() => setShowPendingList(false)}
+                className="w-full py-4 bg-slate-100 text-slate-600 rounded-xl font-black text-[11px] uppercase tracking-widest hover:bg-slate-200 active:scale-95 transition-all"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Export CSV Modal */}
+      {exportModalOpen && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
           <div
             className="absolute inset-0 bg-slate-950/90 backdrop-blur-xl"
-            onClick={() => setInjectModalOpen(false)}
+            onClick={() => setExportModalOpen(false)}
           ></div>
-          <div className="relative bg-white w-full max-w-md rounded-[2rem] p-8 shadow-3xl flex flex-col border border-violet-100 animate-in zoom-in-95">
-            <div className="flex items-center gap-4 mb-6">
-              <div className="w-12 h-12 rounded-2xl bg-violet-100 text-violet-600 flex items-center justify-center text-2xl font-black">
-                +
+          <div className="relative bg-white w-full max-w-4xl rounded-[2.5rem] p-10 shadow-3xl max-h-[90vh] flex flex-col animate-in slide-in-from-bottom-10">
+            <div className="flex items-center justify-between mb-8">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-2xl bg-emerald-100 text-emerald-600 flex items-center justify-center text-2xl font-black">
+                  📊
+                </div>
+                <div>
+                  <h3 className="text-xl font-black uppercase text-slate-900 leading-none">
+                    Export Student Data
+                  </h3>
+                  <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mt-1">
+                    Select fields to include in the CSV export
+                  </p>
+                </div>
               </div>
-              <div>
-                <h3 className="text-lg font-black uppercase text-slate-900 leading-none">
-                  Dynamic Inject
-                </h3>
-                <p className="text-[8px] font-black text-violet-400 uppercase tracking-widest mt-1">
-                  Append New Logic Node
+              <button
+                onClick={() => setExportModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <svg
+                  className="w-6 h-6"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="2.5"
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto custom-scrollbar pr-4">
+              {/* Default fields notice */}
+              <div className="mb-6 p-4 bg-emerald-50 rounded-2xl border border-emerald-200">
+                <p className="text-[10px] font-black text-emerald-700 uppercase tracking-widest mb-2">
+                  Always Included (Default Fields)
                 </p>
+                <div className="flex flex-wrap gap-2">
+                  {["REGNO", "NAME", "DEPT", "YEAR", "SECTION"].map(field => (
+                    <span key={field} className="px-3 py-1 bg-emerald-100 text-emerald-600 rounded-lg text-[10px] font-bold">
+                      {field}
+                    </span>
+                  ))}
+                </div>
               </div>
+
+              {/* Select All / Deselect All buttons */}
+              {(() => {
+                const defaultFieldsSet = new Set(["REGNO", "NAME", "DEPT", "YEAR", "SECTION"]);
+                const filterableFields = organizedRegistryFields.filter(
+                  f => !defaultFieldsSet.has((f.raw || f.label).toUpperCase())
+                );
+                return (
+                  <div className="flex gap-3 mb-6">
+                    <button
+                      onClick={() => setExportSelectedFields(filterableFields.map(f => f.id))}
+                      className="px-4 py-2 bg-emerald-100 text-emerald-600 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-200 transition-all"
+                    >
+                      Select All
+                    </button>
+                    <button
+                      onClick={() => setExportSelectedFields([])}
+                      className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all"
+                    >
+                      Deselect All
+                    </button>
+                    <span className="ml-auto text-[10px] font-bold text-slate-500 self-center">
+                      {exportSelectedFields.length} additional fields selected
+                    </span>
+                  </div>
+                );
+              })()}
+
+              {/* Group fields by category */}
+              {(() => {
+                // Fields that are always included and should not appear in checklist
+                const defaultFields = new Set(["REGNO", "NAME", "DEPT", "YEAR", "SECTION"]);
+                const filterableFields = organizedRegistryFields.filter(
+                  f => !defaultFields.has((f.raw || f.label).toUpperCase())
+                );
+                
+                const groupedFields: Record<string, typeof organizedRegistryFields> = {};
+                filterableFields.forEach((field) => {
+                  if (!groupedFields[field.cat]) groupedFields[field.cat] = [];
+                  groupedFields[field.cat].push(field);
+                });
+
+                return Object.entries(groupedFields).map(([category, fields]) => (
+                  <div key={category} className="mb-6">
+                    <div className="flex items-center gap-2 mb-3 sticky top-0 bg-white py-2 z-10">
+                      <span className="text-lg">{category.split(" ")[0]}</span>
+                      <h4 className="text-[11px] font-black text-slate-600 uppercase tracking-wider">
+                        {category.split(" ").slice(1).join(" ")}
+                      </h4>
+                      <span className="text-[9px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
+                        {fields.length}
+                      </span>
+                      <button
+                        onClick={() => {
+                          const fieldIds = fields.map(f => f.id);
+                          const allSelected = fieldIds.every(id => exportSelectedFields.includes(id));
+                          if (allSelected) {
+                            setExportSelectedFields(prev => prev.filter(id => !fieldIds.includes(id)));
+                          } else {
+                            setExportSelectedFields(prev => [...new Set([...prev, ...fieldIds])]);
+                          }
+                        }}
+                        className="ml-auto text-[8px] font-bold text-emerald-600 hover:text-emerald-700 uppercase"
+                      >
+                        {fields.every(f => exportSelectedFields.includes(f.id)) ? 'Deselect Category' : 'Select Category'}
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      {fields.map((field) => (
+                        <label
+                          key={field.id}
+                          className={`flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all border-2 ${
+                            exportSelectedFields.includes(field.id)
+                              ? "bg-emerald-50 border-emerald-300 shadow-sm"
+                              : "bg-slate-50 border-transparent hover:bg-slate-100"
+                          }`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <input
+                              type="checkbox"
+                              checked={exportSelectedFields.includes(field.id)}
+                              onChange={() => {
+                                setExportSelectedFields(prev =>
+                                  prev.includes(field.id)
+                                    ? prev.filter(id => id !== field.id)
+                                    : [...prev, field.id]
+                                );
+                              }}
+                              className="w-5 h-5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500/20"
+                            />
+                            <span
+                              className={`text-[11px] font-black uppercase ${
+                                exportSelectedFields.includes(field.id)
+                                  ? "text-emerald-600"
+                                  : "text-slate-700"
+                              }`}
+                            >
+                              {field.label}
+                            </span>
+                          </div>
+                          {field.raw && (
+                            <span className="text-[8px] text-slate-400 font-mono bg-slate-100 px-1.5 py-0.5 rounded">
+                              {field.raw}
+                            </span>
+                          )}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ));
+              })()}
             </div>
-            <div className="space-y-2 mb-8">
-              <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
-                Descriptor Name
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. Placement Cell ID"
-                className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-4 px-6 text-sm font-bold text-slate-800 focus:outline-none focus:border-violet-500 transition-all shadow-inner"
-                value={newFieldName}
-                onChange={(e) => setNewFieldName(e.target.value)}
-              />
-            </div>
-            <div className="flex gap-3">
+            <div className="mt-10 flex gap-4">
               <button
                 onClick={() => {
-                  if (newFieldName.trim()) {
-                    setRegistryFields((prev) => [
-                      ...prev,
-                      {
-                        id: newFieldName.toLowerCase().replace(/\s/g, "_"),
-                        label: newFieldName.toUpperCase(),
-                        cat: "Custom",
-                      },
-                    ]);
-                    setInjectModalOpen(false);
-                    setNewFieldName("");
-                  }
+                  // Mapping from database column names to StudentRecord property names
+                  const dbToPropertyMap: Record<string, string> = {
+                    "REGNO": "regNo",
+                    "NAME": "name",
+                    "DEPT": "dept",
+                    "YEAR": "year",
+                    "SECTION": "section",
+                    "GENDER": "gender",
+                    "MOBILE_NO": "mobile",
+                    "ALT_MOBILE_NO": "altMobile",
+                    "OFFICIAL_MAIL": "officialEmail",
+                    "EMAIL": "personalEmail",
+                    "CURRENT_ADDRESS": "currentAddress",
+                    "PERMANENT_ADDRESS": "permanentAddress",
+                    "PINCODE": "pincode",
+                    "STATE": "state",
+                    "AADHAR_NO": "aadhar",
+                    "PAN_NO": "pan",
+                    "FATHER_NAME": "fatherName",
+                    "MOTHER_NAME": "motherName",
+                    "10TH_BOARD_PCT": "tenthPercentage",
+                    "12TH_BOARD_PCT": "twelfthPercentage",
+                    "10TH_BOARD_YEAR": "tenthYear",
+                    "12TH_BOARD_YEAR": "twelfthYear",
+                    "GPA_SEM1": "gpaSem1",
+                    "GPA_SEM2": "gpaSem2",
+                    "GPA_SEM3": "gpaSem3",
+                    "GPA_SEM4": "gpaSem4",
+                    "GPA_SEM5": "gpaSem5",
+                    "GPA_SEM6": "gpaSem6",
+                    "GPA_SEM7": "gpaSem7",
+                    "GPA_SEM8": "gpaSem8",
+                    "CGPA": "cgpaOverall",
+                    "KNOWN_TECH_STACK": "techStack",
+                    "RESUME_LINK": "resumeUrl",
+                    "WILLING_TO_RELOCATE": "relocate",
+                    "PLACEMENT_HS": "placementStatus",
+                    "LEETCODE_ID": "leetcodeId",
+                    "LC_TOTAL_PROBLEMS": "lcTotal",
+                    "LC_EASY": "lcEasy",
+                    "LC_MEDIUM": "lcMed",
+                    "LC_HARD": "lcHard",
+                    "LC_RATING": "lcRating",
+                    "LC_BADGES": "lcBadges",
+                    "LC_MAX_RATING": "lcMax",
+                    "CODECHEF_ID": "codechefId",
+                    "CC_TOTAL_PROBLEMS": "ccTotal",
+                    "CC_RANK": "ccRank",
+                    "CC_BADGES": "ccBadges",
+                    "CC_RATING": "ccRating",
+                    "SKILLRACK_ID": "skillrackId",
+                    "SR_PROBLEMS_SOLVED": "srProblems",
+                    "SR_RANK": "srRank",
+                    "GITHUB_ID": "github",
+                    "GITHUB_LINK": "github",
+                    "LINKEDIN_URL": "linkedin",
+                    "COE_NAME": "coeName",
+                    "COE_INCHARGE_NAME": "coeIncharge",
+                    "COE_PROJECTS_DONE": "coeProjects",
+                    "RESIDENCY_STATUS": "isHosteller",
+                    "CODEFORCES_ID": "codeforcesId",
+                    "CF_RATING": "cfRating",
+                    "INTERNSHIP_COMPANY": "internshipCompany",
+                    "INTERNSHIP_OFFER_LINK": "internshipOfferLink",
+                  };
+                  
+                  // Default fields always included
+                  const defaultRawFields = ["REGNO", "NAME", "DEPT", "YEAR", "SECTION"];
+                  
+                  // Get raw field names for selected additional fields
+                  const additionalRawFields = organizedRegistryFields
+                    .filter(f => exportSelectedFields.includes(f.id))
+                    .map(f => f.raw || f.label);
+                  
+                  // Combine default + selected fields
+                  const allFields = [...defaultRawFields, ...additionalRawFields];
+                  
+                  // Build CSV content
+                  const headers = allFields.join(",");
+                  const rows = students.map(student => {
+                    return allFields.map(field => {
+                      // Map database field name to StudentRecord property name
+                      const propName = dbToPropertyMap[field] || field;
+                      const value = (student as any)[propName] ?? "";
+                      // Handle arrays (like techStack)
+                      const displayValue = Array.isArray(value) ? value.join("; ") : value;
+                      // Escape quotes and wrap in quotes if contains comma
+                      const strValue = String(displayValue).replace(/"/g, '""');
+                      return strValue.includes(",") || strValue.includes('"') || strValue.includes("\n")
+                        ? `"${strValue}"`
+                        : strValue;
+                    }).join(",");
+                  });
+                  
+                  const csvContent = [headers, ...rows].join("\n");
+                  
+                  // Create and download the file
+                  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+                  const link = document.createElement("a");
+                  const url = URL.createObjectURL(blob);
+                  link.setAttribute("href", url);
+                  link.setAttribute("download", `students_${sectionName || 'all'}_${new Date().toISOString().split('T')[0]}.csv`);
+                  link.style.visibility = "hidden";
+                  document.body.appendChild(link);
+                  link.click();
+                  document.body.removeChild(link);
+                  
+                  setExportModalOpen(false);
                 }}
-                disabled={!newFieldName.trim()}
-                className="flex-1 py-4 bg-violet-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl hover:bg-violet-700 active:scale-95 disabled:opacity-50"
+                className="flex-1 py-5 bg-emerald-600 text-white rounded-2xl text-[11px] font-black uppercase tracking-widest shadow-xl hover:bg-emerald-700 active:scale-95 transition-all"
               >
-                Confirm
+                Download CSV ({5 + exportSelectedFields.length} fields)
               </button>
               <button
-                onClick={() => setInjectModalOpen(false)}
-                className="flex-1 py-4 bg-slate-100 text-slate-400 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 active:scale-95"
+                onClick={() => setExportModalOpen(false)}
+                className="flex-1 py-5 bg-slate-100 text-slate-400 rounded-2xl text-[11px] font-black uppercase tracking-widest hover:bg-slate-200 active:scale-95 transition-all"
               >
                 Cancel
               </button>
@@ -1368,7 +1876,9 @@ const AiryDataItem: React.FC<{
       <input
         className={`w-full font-black tracking-tight leading-none break-words ${
           large ? "text-2xl" : "text-[11px]"
-        } ${highlight ? "text-violet-600" : "text-slate-900"} p-2 border rounded-lg`}
+        } ${
+          highlight ? "text-violet-600" : "text-slate-900"
+        } p-2 border rounded-lg`}
         value={editValue ?? value ?? ""}
         onChange={(e) => onEdit && onEdit(e.target.value)}
       />

@@ -1,16 +1,17 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
 import { SecurityAnalysis } from "../types";
 
 // Always use the process.env.API_KEY directly when initializing.
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-export const analyzeSecurity = async (password: string): Promise<SecurityAnalysis> => {
+export const analyzeSecurity = async (
+  password: string
+): Promise<SecurityAnalysis> => {
   if (!password || password.length < 3) {
     return {
-      strength: 'weak',
-      feedback: 'Insufficient security parameters.',
-      tips: ['Input at least 8 alphanumeric characters.']
+      strength: "weak",
+      feedback: "Insufficient security parameters.",
+      tips: ["Input at least 8 alphanumeric characters."],
     };
   }
 
@@ -27,23 +28,23 @@ export const analyzeSecurity = async (password: string): Promise<SecurityAnalysi
           properties: {
             strength: { type: Type.STRING },
             feedback: { type: Type.STRING },
-            tips: { 
+            tips: {
               type: Type.ARRAY,
-              items: { type: Type.STRING }
-            }
+              items: { type: Type.STRING },
+            },
           },
-          required: ["strength", "feedback", "tips"]
-        }
-      }
+          required: ["strength", "feedback", "tips"],
+        },
+      },
     });
 
     // Directly access .text property from GenerateContentResponse
     return JSON.parse(response.text || "{}") as SecurityAnalysis;
   } catch (error) {
     return {
-      strength: 'moderate',
-      feedback: 'Verification sub-routines offline. Proceed with caution.',
-      tips: ['Include complex symbols', 'Increase entropy']
+      strength: "moderate",
+      feedback: "Verification sub-routines offline. Proceed with caution.",
+      tips: ["Include complex symbols", "Increase entropy"],
     };
   }
 };

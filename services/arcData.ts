@@ -270,14 +270,21 @@ function normalizeStudentRow(row: any): StudentRow {
   const directHosteller = lookupField(row, ["is_hosteller", "IS_HOSTELLER"]);
 
   let derivedIsHosteller: boolean | null = null;
-  if (residencyRaw !== undefined && residencyRaw !== null && String(residencyRaw).trim() !== "") {
+  if (
+    residencyRaw !== undefined &&
+    residencyRaw !== null &&
+    String(residencyRaw).trim() !== ""
+  ) {
     const r = String(residencyRaw).trim().toLowerCase();
-    derivedIsHosteller = r === "hosteller" || r === "hostel" || r === "host" || r === "hosteller";
+    derivedIsHosteller =
+      r === "hosteller" || r === "hostel" || r === "host" || r === "hosteller";
   } else if (directHosteller !== undefined && directHosteller !== null) {
-    if (typeof directHosteller === "boolean") derivedIsHosteller = directHosteller;
+    if (typeof directHosteller === "boolean")
+      derivedIsHosteller = directHosteller;
     else {
       const d = String(directHosteller).trim().toLowerCase();
-      derivedIsHosteller = d === "true" || d === "1" || d === "yes" || d === "hosteller";
+      derivedIsHosteller =
+        d === "true" || d === "1" || d === "yes" || d === "hosteller";
     }
   }
 
@@ -384,55 +391,77 @@ export async function fetchProfileByUserId(
 // --- Needs updation helpers ---
 export async function setNeedsUpdation(section: string, fields: string[]) {
   try {
-    const normalizedSection = (section || '').toString().trim().toUpperCase();
+    const normalizedSection = (section || "").toString().trim().toUpperCase();
 
     // Remove existing entries for this section
-    await supabase.from('field_update_requests').delete().eq('section', normalizedSection);
+    await supabase
+      .from("field_update_requests")
+      .delete()
+      .ilike("section", normalizedSection);
 
     if (!fields || fields.length === 0) return { success: true };
 
-    const rows = fields.map((f) => ({ section: normalizedSection, field_label: f }));
-    const { error } = await supabase.from('field_update_requests').insert(rows);
+    const rows = fields.map((f) => ({
+      section: normalizedSection,
+      field_label: f,
+    }));
+    const { error } = await supabase.from("field_update_requests").insert(rows);
     if (error) throw error;
     return { success: true };
   } catch (err: any) {
-    console.warn('setNeedsUpdation failed:', err?.message ?? err);
+    console.warn("setNeedsUpdation failed:", err?.message ?? err);
     return { success: false, error: err };
   }
 }
 
 export async function clearNeedsUpdation(section: string) {
   try {
-    const normalizedSection = (section || '').toString().trim().toUpperCase();
-    const { error } = await supabase.from('field_update_requests').delete().eq('section', normalizedSection);
+    const normalizedSection = (section || "").toString().trim().toUpperCase();
+    const { error } = await supabase
+      .from("field_update_requests")
+      .delete()
+      .ilike("section", normalizedSection);
     if (error) throw error;
     return { success: true };
   } catch (err: any) {
-    console.warn('clearNeedsUpdation failed:', err?.message ?? err);
+    console.warn("clearNeedsUpdation failed:", err?.message ?? err);
     return { success: false, error: err };
   }
 }
 
 export async function fetchNeedsUpdation(section: string) {
   try {
-    const normalizedSection = (section || '').toString().trim().toUpperCase();
-    const { data, error } = await supabase.from('field_update_requests').select('field_label').eq('section', normalizedSection);
+    const normalizedSection = (section || "").toString().trim().toUpperCase();
+    const { data, error } = await supabase
+      .from("field_update_requests")
+      .select("field_label")
+      .ilike("section", normalizedSection);
     if (error) throw error;
-    return Array.isArray(data) ? data.map((r: any) => String(r.field_label)) : [];
+    return Array.isArray(data)
+      ? data.map((r: any) => String(r.field_label))
+      : [];
   } catch (err: any) {
-    console.warn('fetchNeedsUpdation failed:', err?.message ?? err);
+    console.warn("fetchNeedsUpdation failed:", err?.message ?? err);
     return [];
   }
 }
 
-export async function updateStudentByRegNo(regNo: string, updates: Record<string, any>) {
+export async function updateStudentByRegNo(
+  regNo: string,
+  updates: Record<string, any>
+) {
   try {
-    const normalized = String(regNo || '').trim();
-    const { data, error } = await supabase.from('students').update(updates).eq('reg_no', normalized).select().maybeSingle();
+    const normalized = String(regNo || "").trim();
+    const { data, error } = await supabase
+      .from("Students")
+      .update(updates)
+      .eq("REGNO", normalized)
+      .select()
+      .maybeSingle();
     if (error) throw error;
     return { success: true, data };
   } catch (err: any) {
-    console.warn('updateStudentByRegNo failed:', err?.message ?? err);
+    console.warn("updateStudentByRegNo failed:", err?.message ?? err);
     return { success: false, error: err };
   }
 }
@@ -440,17 +469,25 @@ export async function updateStudentByRegNo(regNo: string, updates: Record<string
 // Return list of column names for the students table by fetching one row and deriving keys.
 export async function fetchStudentColumns(): Promise<string[]> {
   try {
-    const { data, error } = await supabase.from('students').select('*').limit(1).maybeSingle();
+    const { data, error } = await supabase
+      .from("Students")
+      .select("*")
+      .limit(1)
+      .maybeSingle();
     if (error) {
-      // Try capitalized table name as fallback
-      const alt = await supabase.from('Students').select('*').limit(1).maybeSingle();
+      // Try lowercase table name as fallback
+      const alt = await supabase
+        .from("students")
+        .select("*")
+        .limit(1)
+        .maybeSingle();
       if (!alt.error && alt.data) return Object.keys(alt.data);
       throw error;
     }
     if (!data) return [];
     return Object.keys(data);
   } catch (err: any) {
-    console.warn('fetchStudentColumns failed:', err?.message ?? err);
+    console.warn("fetchStudentColumns failed:", err?.message ?? err);
     return [];
   }
 }
@@ -523,29 +560,41 @@ export async function fetchStudentsBySection(
       if (sawOkEmptyForCandidate) continue;
     }
 
-    // Final fallback: fetch all rows from candidate tables and filter client-side
+    // Final fallback: fetch all rows from candidate tables (paginated) and filter client-side
+    const pageSize = 1000;
     for (const c of candidates) {
       try {
-        const resp = await supabase
-          .from(c.table)
-          .select("*")
-          .order(c.nameCol, { ascending: true });
-        if (!resp.error) {
-          const all = resp.data ?? [];
-          const filtered = (all ?? []).filter((r: any) => {
+        let allRows: any[] = [];
+        let start = 0;
+        while (true) {
+          const resp = await supabase
+            .from(c.table)
+            .select("*")
+            .order(c.nameCol, { ascending: true })
+            .range(start, start + pageSize - 1);
+          if (resp.error) {
+            console.debug("[arcData] fetch-all paged response error", {
+              table: c.table,
+              orderBy: c.nameCol,
+              start,
+              status: (resp as any).status ?? undefined,
+              error: resp.error,
+            });
+            break;
+          }
+          const page = resp.data ?? [];
+          allRows = allRows.concat(page as any[]);
+          if (!page || page.length < pageSize) break;
+          start += pageSize;
+        }
+
+        if (allRows.length > 0) {
+          const filtered = allRows.filter((r: any) => {
             const nr = normalizeStudentRow(r).section ?? "";
             return String(nr).trim().toUpperCase() === normalized.toUpperCase();
           });
-          return filtered.map((r: any) =>
-            normalizeStudentRow(r)
-          ) as StudentRow[];
+          return filtered.map((r: any) => normalizeStudentRow(r)) as StudentRow[];
         }
-        console.debug("[arcData] fetch-all response error", {
-          table: c.table,
-          orderBy: c.nameCol,
-          status: (resp as any).status ?? undefined,
-          error: resp.error,
-        });
       } catch (e) {
         // continue
       }
@@ -629,23 +678,37 @@ export async function fetchAllStudents(): Promise<StudentRow[]> {
       { table: "Students", nameCol: "NAME" },
     ];
 
+    // Fetch all rows in pages to avoid PostgREST / Supabase 1000-row default cap.
+    const pageSize = 1000;
     for (const c of candidates) {
       try {
-        const resp = await supabase
-          .from(c.table)
-          .select("*")
-          .order(c.nameCol, { ascending: true });
-        if (!resp.error) {
-          return (resp.data ?? []).map((r: any) =>
-            normalizeStudentRow(r)
-          ) as StudentRow[];
+        let allRows: any[] = [];
+        let start = 0;
+        while (true) {
+          const resp = await supabase
+            .from(c.table)
+            .select("*")
+            .order(c.nameCol, { ascending: true })
+            .range(start, start + pageSize - 1);
+          if (resp.error) {
+            console.debug("[arcData] fetchAllStudents paged response error", {
+              table: c.table,
+              orderBy: c.nameCol,
+              start,
+              status: (resp as any).status ?? undefined,
+              error: resp.error,
+            });
+            break;
+          }
+          const page = resp.data ?? [];
+          allRows = allRows.concat(page as any[]);
+          if (!page || page.length < pageSize) break;
+          start += pageSize;
         }
-        console.debug("[arcData] fetchAllStudents response error", {
-          table: c.table,
-          orderBy: c.nameCol,
-          status: (resp as any).status ?? undefined,
-          error: resp.error,
-        });
+
+        if (allRows.length > 0) {
+          return allRows.map((r: any) => normalizeStudentRow(r)) as StudentRow[];
+        }
       } catch (e) {
         // try next candidate
       }
@@ -715,63 +778,190 @@ export async function fetchAvailableSections(): Promise<string[]> {
 }
 
 // Broadcast a needs-updation notification to all students in a section.
-// This is best-effort: it will try a few common notification table names and
-// fall back to logging if none exist. The message contains the list of fields.
-export async function broadcastNeedsUpdation(section: string, fields: string[]) {
+// The field_update_requests table already stores section + field_label pairs,
+// so students can query that table by their section to see active update requests.
+// This function is kept for any additional notification logic (e.g., push notifications).
+export async function broadcastNeedsUpdation(
+  section: string,
+  fields: string[]
+) {
   try {
-    const normalizedSection = (section || '').toString().trim().toUpperCase();
-
-    // Build message
+    const normalizedSection = (section || "").toString().trim().toUpperCase();
     const labels = Array.isArray(fields) ? fields : [];
-    const message = labels.length
-      ? `Please update the following field(s): ${labels.join(', ')}.`
-      : `Please review your registry record.`;
 
-    // Fetch student rows for the section
-    const students = await fetchStudentsBySection(normalizedSection);
-    if (!Array.isArray(students) || students.length === 0) {
-      console.debug('[arcData] broadcastNeedsUpdation: no students found for', normalizedSection);
-      return { success: true, note: 'no-students' };
-    }
+    // The setNeedsUpdation already persists to field_update_requests.
+    // Students query that table by section to see what fields need updating.
+    // Log for debugging:
+    console.debug("[arcData] broadcastNeedsUpdation:", {
+      section: normalizedSection,
+      fields: labels,
+    });
 
-    // Prepare notification rows
-    const rows = students.map((s) => ({
-      student_reg_no: s.reg_no,
-      student_email: s.personal_email ?? s.official_email ?? null,
-      message,
-      created_at: new Date().toISOString(),
+    return { success: true, section: normalizedSection, fields: labels };
+  } catch (err: any) {
+    console.warn("broadcastNeedsUpdation failed:", err?.message ?? err);
+    return { success: false, error: err };
+  }
+}
+
+// --- Student update tracking ---
+// Records when a student marks a field as updated
+export async function markFieldUpdated(
+  section: string,
+  regNo: string,
+  fieldLabel: string
+) {
+  try {
+    const normalizedSection = (section || "").toString().trim().toUpperCase();
+    const normalizedRegNo = (regNo || "").toString().trim();
+
+    const { error } = await supabase.from("field_update_completions").upsert(
+      {
+        section: normalizedSection,
+        reg_no: normalizedRegNo,
+        field_label: fieldLabel,
+        completed_at: new Date().toISOString(),
+      },
+      { onConflict: "section,reg_no,field_label" }
+    );
+
+    if (error) throw error;
+    return { success: true };
+  } catch (err: any) {
+    console.warn("markFieldUpdated failed:", err?.message ?? err);
+    return { success: false, error: err };
+  }
+}
+
+// Fetch all students who have NOT completed all required field updates
+export async function fetchStudentsWithPendingUpdates(section: string) {
+  try {
+    const normalizedSection = (section || "").toString().trim().toUpperCase();
+
+    // Get all required fields for this section (use ilike for case-insensitive matching)
+    const { data: requiredFields, error: fieldsError } = await supabase
+      .from("field_update_requests")
+      .select("field_label")
+      .ilike("section", normalizedSection);
+
+    if (fieldsError) throw fieldsError;
+    if (!requiredFields || requiredFields.length === 0)
+      return { students: [], allComplete: true, totalStudents: 0 };
+
+    const requiredLabels = requiredFields.map((f: any) => f.field_label);
+
+    // Get all students in this section - use correct table/column names from actual schema
+    const { data: students, error: studentsError } = await supabase
+      .from("Students")
+      .select("REGNO, NAME")
+      .ilike("SECTION", normalizedSection);
+
+    if (studentsError) throw studentsError;
+    if (!students || students.length === 0)
+      return { students: [], allComplete: true, totalStudents: 0 };
+
+    // Normalize student data
+    const normalizedStudents = students.map((s: any) => ({
+      reg_no: s.REGNO,
+      name: s.NAME,
     }));
 
-    // Try common table names
-    const candidateTables = ['student_notifications', 'notifications', 'messages'];
-    for (const tbl of candidateTables) {
-      try {
-        const { error } = await supabase.from(tbl).insert(rows);
-        if (!error) {
-          console.debug('[arcData] broadcastNeedsUpdation inserted into', tbl, 'rows', rows.length);
-          return { success: true, table: tbl };
-        }
+    // Get all completions for this section - handle table not existing gracefully
+    let completions: any[] = [];
+    try {
+      const { data: completionsData, error: completionsError } = await supabase
+        .from("field_update_completions")
+        .select("reg_no, field_label")
+        .ilike("section", normalizedSection);
 
-        const msg = String((error as any)?.message ?? '').toLowerCase();
-        if (msg.includes('does not exist') || msg.includes('relation')) {
-          // try next candidate
-          continue;
-        }
-
-        // unexpected error
-        console.warn('[arcData] broadcastNeedsUpdation insert error', tbl, error);
-        return { success: false, error };
-      } catch (e: any) {
-        // try next candidate
-        continue;
+      if (!completionsError) {
+        completions = completionsData || [];
       }
+    } catch (e) {
+      // Table might not exist yet - treat all students as pending
+      console.warn("field_update_completions table may not exist:", e);
     }
 
-    console.debug('[arcData] broadcastNeedsUpdation: no notification table found, logging only');
-    // As a fallback, optionally write to a lightweight audit table or return success
-    return { success: true, note: 'no-notification-table' };
+    // Build a map of student completions (normalize reg_no to uppercase for consistent matching)
+    const completionMap: Record<string, Set<string>> = {};
+    completions.forEach((c: any) => {
+      const regNoKey = String(c.reg_no || "").trim().toUpperCase();
+      if (!completionMap[regNoKey]) completionMap[regNoKey] = new Set();
+      completionMap[regNoKey].add(c.field_label);
+    });
+
+    // Find students with incomplete updates (normalize reg_no to uppercase for matching)
+    const pendingStudents = normalizedStudents
+      .filter((s: any) => {
+        const regNoKey = String(s.reg_no || "").trim().toUpperCase();
+        const completed = completionMap[regNoKey] || new Set();
+        return requiredLabels.some((label: string) => !completed.has(label));
+      })
+      .map((s: any) => {
+        const regNoKey = String(s.reg_no || "").trim().toUpperCase();
+        const completed = completionMap[regNoKey] || new Set();
+        const missing = requiredLabels.filter(
+          (label: string) => !completed.has(label)
+        );
+        return {
+          ...s,
+          missingFields: missing,
+          completedCount: completed.size,
+          totalRequired: requiredLabels.length,
+        };
+      });
+
+    const allComplete = pendingStudents.length === 0;
+
+    return {
+      students: pendingStudents,
+      allComplete,
+      totalStudents: normalizedStudents.length,
+      requiredFields: requiredLabels,
+    };
   } catch (err: any) {
-    console.warn('broadcastNeedsUpdation failed:', err?.message ?? err);
-    return { success: false, error: err };
+    console.warn(
+      "fetchStudentsWithPendingUpdates failed:",
+      err?.message ?? err
+    );
+    return { students: [], allComplete: false, error: err, totalStudents: 0 };
+  }
+}
+
+// Check if all students in a section have completed all updates and auto-clear if so
+export async function checkAndAutoClearUpdates(section: string) {
+  try {
+    const result = await fetchStudentsWithPendingUpdates(section);
+
+    if (
+      result.allComplete &&
+      result.totalStudents &&
+      result.totalStudents > 0
+    ) {
+      // All students have completed - clear the update requests
+      await clearNeedsUpdation(section);
+
+      // Also clear the completions for this section
+      const normalizedSection = (section || "").toString().trim().toUpperCase();
+      await supabase
+        .from("field_update_completions")
+        .delete()
+        .ilike("section", normalizedSection);
+
+      return {
+        cleared: true,
+        message:
+          "All students completed updates - requests cleared automatically",
+      };
+    }
+
+    return {
+      cleared: false,
+      pending: result.students.length,
+      total: result.totalStudents,
+    };
+  } catch (err: any) {
+    console.warn("checkAndAutoClearUpdates failed:", err?.message ?? err);
+    return { cleared: false, error: err };
   }
 }
