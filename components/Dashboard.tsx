@@ -100,9 +100,16 @@ export const Dashboard: React.FC<{
   // Remove or set to `false` before committing to production.
   const DEBUG_LOG_STUDENTS = false;
   const [search, setSearch] = useState("");
+  // NLP quick-search state (supports comma-separated segments)
+  const [nlpQuery, setNlpQuery] = useState("");
+  const [nlpResult, setNlpResult] = useState<{
+    items: { students: StudentRecord[]; fields: string[] | null; query: string; notFound?: boolean; lowConfidence?: boolean; confidence?: number; scores?: number[] }[];
+  } | null>(null);
   const [selectedStudent, setSelectedStudent] = useState<StudentRecord | null>(
     null
   );
+  // Inline edits made during NLP result viewing: { regNo: { fieldKey: value } }
+  const [nlpEdits, setNlpEdits] = useState<Record<string, Record<string, any>>>({});
   const [editedStudent, setEditedStudent] = useState<Record<
     string,
     any
@@ -372,6 +379,496 @@ export const Dashboard: React.FC<{
     );
   };
 
+  // Process NLP query: supports comma-separated segments like "name intent, name2 intent2"
+  // Helper: compute Levenshtein distance and similarity ratio
+  const levenshtein = (a: string, b: string) => {
+    const m = a.length;
+    const n = b.length;
+    const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+    for (let i = 0; i <= m; i++) dp[i][0] = i;
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+      }
+    }
+    return dp[m][n];
+  };
+
+  const similarity = (a: string, b: string) => {
+    if (!a && !b) return 1;
+    if (!a || !b) return 0;
+    const lev = levenshtein(a, b);
+    const maxLen = Math.max(a.length, b.length);
+    return maxLen === 0 ? 1 : 1 - lev / maxLen;
+  };
+
+  const processNlpQuery = (q: string) => {
+    const raw = String(q ?? "").trim();
+    if (!raw) {
+      setNlpResult(null);
+      return;
+    }
+
+    const intents: Record<string, string[]> = {
+      leetcode: ["leetcode", "lc"],
+      personal: ["personal", "personal details", "personal info", "details"],
+      phone: ["phone", "mobile", "contact", "phone number", "mobile no"],
+      cgpa: ["cgpa", "cgpa index", "cgpa overall"],
+      gpa: ["gpa", "sem", "semester"],
+      codechef: ["codechef", "cc"],
+      skillrack: ["skillrack", "sr"],
+      github: ["github", "git hub", "git-hub", "git hub", "git"],
+      residency: ["hostel", "hosteller", "residency", "home", "home type", "home types", "residency status", "day scholar", "dayscholar"],
+      address: ["address", "home", "residence", "permanent address", "current address"],
+      resume: ["resume", "cv", "curriculum vitae"],
+      id: ["aadhar", "pan", "adhar", "aadhar no", "pan no"],
+      placement: ["placement", "offer", "company", "placed"],
+      coe: ["coe", "center of excellence", "projects"],
+    };
+
+    // Support semicolon-separated student groups, with comma-separated subsegments inside each group.
+    const groups = String(raw).split(/\s*;\s*/).map((g) => g.trim()).filter(Boolean);
+    const items: { students: StudentRecord[]; fields: string[] | null; query: string; notFound?: boolean; lowConfidence?: boolean; confidence?: number; scores?: number[] }[] = [];
+
+    for (const group of groups) {
+      const subsegments = String(group).split(/\s*,\s*/).map((s) => s.trim()).filter(Boolean);
+      const groupItems: { students: StudentRecord[]; fields: string[] | null; query: string; notFound?: boolean; lowConfidence?: boolean; confidence?: number; scores?: number[] }[] = [];
+
+      for (const seg of subsegments) {
+        const segLow = seg.toLowerCase();
+
+        // Special: detect "top N <platform>" queries (e.g., "top 10 lc", "top 5 codechef")
+        const topMatch = segLow.match(/\btop\s+(\d{1,3})\s*(?:by\s*)?(lc|leetcode|codechef|cc|skillrack|sr|placement|cgpa|gpa)\b(?:\s+(rating|total|solved))?/i);
+        if (topMatch) {
+          const n = Math.max(1, Math.min(200, Number(topMatch[1] || 10)));
+          const platform = (topMatch[2] || "lc").toLowerCase();
+          const metricHint = (topMatch[3] || "").toLowerCase();
+
+          let metric = "lcTotal";
+          let fieldsForPlatform: string[] = ["leetcodeId", "lcTotal", "lcRating", "lcEasy", "lcMed", "lcHard"];
+
+          if (platform === "codechef" || platform === "cc") {
+            metric = "ccTotal";
+            fieldsForPlatform = ["codechefId", "ccTotal", "ccRating", "ccRank", "ccBadges"];
+          } else if (platform === "skillrack" || platform === "sr") {
+            metric = "srProblems";
+            fieldsForPlatform = ["skillrackId", "srProblems", "srRank"];
+          } else if (platform === "placement") {
+            metric = "placementStatus"; // placement ranking is less numeric; keep primary placement info
+            fieldsForPlatform = ["placement", "internshipCompany", "internshipOfferLink"];
+          } else if (platform === "cgpa") {
+            metric = "cgpaOverall";
+            fieldsForPlatform = ["cgpaOverall", "gpaSem1", "gpaSem2", "gpaSem3"];
+          } else if (platform === "gpa") {
+            metric = "gpaSem1";
+            fieldsForPlatform = ["gpaSem1", "gpaSem2", "gpaSem3", "gpaSem4"];
+          }
+
+          // If user asked specifically for 'rating', prefer rating fields where possible
+          if (metricHint === "rating") {
+            if (metric === "lcTotal") metric = "lcRating";
+            if (metric === "ccTotal") metric = "ccRating";
+          }
+
+          const scored = students
+            .map((s) => ({ s, val: Number((s as any)[metric]) || 0 }))
+            .sort((a, b) => b.val - a.val)
+            .slice(0, n)
+            .map((x) => x.s);
+
+          // Push as a single NLP item with high confidence
+          items.push({ students: scored, fields: fieldsForPlatform, query: seg, notFound: scored.length === 0, lowConfidence: false, confidence: 1 });
+          continue;
+        }
+
+      // determine fields for this segment via exact intent tokens
+      let fields: string[] | null = null;
+      for (const key in intents) {
+        for (const k of intents[key]) {
+          if (segLow.includes(k)) {
+            switch (key) {
+              case "leetcode":
+                  fields = ["leetcodeId", "lcTotal", "lcRating", "lcEasy", "lcMed", "lcHard", "lcBadges", "lcMax"];
+                  break;
+              case "phone":
+                fields = ["mobile", "altMobile"];
+                break;
+              case "personal":
+                fields = ["personalEmail", "officialEmail", "currentAddress", "permanentAddress"];
+                break;
+              case "cgpa":
+                fields = ["cgpaOverall"];
+                break;
+              case "gpa":
+                fields = ["gpaSem1", "gpaSem2", "gpaSem3"];
+                break;
+              case "codechef":
+                fields = ["codechefId", "ccTotal", "ccRank", "ccRating", "ccBadges"];
+                break;
+              case "skillrack":
+                fields = ["srProblems", "srRank"];
+                break;
+              case "github":
+                fields = ["github"];
+                break;
+              case "residency":
+                fields = ["isHosteller"];
+                break;
+            }
+          }
+        }
+      }
+
+      // Additional fuzzy detection: map common field aliases to keys and detect via similarity
+      const fieldAliases: Record<string, string[]> = {
+        guardianName: ["guardian", "guardian name", "guardian_name", "guardianname"],
+        diplomaYear: ["diploma year", "diploma", "diploma_year"],
+        diplomaPercentage: ["diploma %", "diploma percentage", "diploma_pct"],
+        gpaSem4: ["gpa sem4", "gpa sem 4", "sem4", "gpa4"],
+        gpaSem5: ["gpa sem5", "gpa sem 5", "sem5", "gpa5"],
+        gpaSem6: ["gpa sem6", "gpa sem 6", "sem6", "gpa6"],
+        gpaSem7: ["gpa sem7", "gpa sem 7", "sem7", "gpa7"],
+        gpaSem8: ["gpa sem8", "gpa sem 8", "sem8", "gpa8"],
+        skillrackId: ["skillrack id", "skill rack id", "sr id", "skillrackid"],
+        internshipCompany: ["internship", "internship company", "internship company name", "internship_company"],
+        internshipOfferLink: ["internship offer", "internship offer link", "offer letter", "internship_offer_link"],
+        aadhar: ["aadhar", "adhar", "aadhar no", "aadhar number"],
+        pan: ["pan", "pan no", "pan number"],
+        cgpaOverall: ["cgpa", "cgpa overall"],
+        leetcodeId: ["leetcode", "lc", "leet"],
+        codechefId: ["codechef", "cc"],
+        github: ["github", "git", "git hub"],
+        linkedin: ["linkedin", "linked in"],
+        personalEmail: ["email", "personal email", "personal mail", "mail"],
+        officialEmail: ["official email", "official mail", "office mail"],
+        mobile: ["mobile", "phone", "mobile no", "phone number", "contact"],
+        fatherName: ["father", "father name", "dad", "daddy", "father's name"],
+        motherName: ["mother", "mother name", "mom", "mummy", "mother's name"],
+        dob: ["dob", "date of birth", "birthdate", "d.o.b", "birth date", "bday", "birthdate", "dateofbirth"],
+        lcTotal: ["lc total", "lc count", "leetcode total", "leetcode count", "leetcode solved", "lc solved", "lc_total", "total solved", "total problems", "lc problems"],
+        ccTotal: ["cc total", "cc count", "codechef total", "codechef count", "cc solved", "cc_total", "codechef solved"],
+        name: ["name", "student name", "student_name", "studentname"],
+        regNo: ["reg", "reg no", "registration", "roll", "roll no", "regno"],
+        resumeUrl: ["resume", "cv", "curriculum vitae", "resume link"],
+        knownTechStack: ["skills", "known tech stack", "tech stack", "technologies", "stack"],
+        placement: ["placement", "placed", "offer", "company", "company offer", "package"],
+        coeName: ["coe", "center of excellence", "coe name", "projects"],
+        isHosteller: ["hostel", "hosteller", "residency", "home", "day scholar", "dayscholar"],
+      };
+
+      const tokens = segLow.split(/\s+/).filter(Boolean);
+      // First pass: detect multi-word aliases that appear in the whole segment (handles 'lc count')
+      for (const key in fieldAliases) {
+        for (const alias of fieldAliases[key]) {
+          if (segLow.includes(alias.toLowerCase())) {
+            fields = Array.from(new Set([...(fields || []), key]));
+          }
+        }
+      }
+      // fuzzy-match tokens against field aliases
+      for (const t of tokens) {
+        for (const key in fieldAliases) {
+          for (const alias of fieldAliases[key]) {
+            const sim = similarity(t, alias.toLowerCase());
+            if (sim > 0.75) {
+              fields = Array.from(new Set([...(fields || []), key]));
+            }
+          }
+        }
+      }
+
+      // Also fuzzy-match tokens to intent alias tokens (covers misspellings like 'lcetode')
+      for (const t of tokens) {
+        for (const intentKey in intents) {
+          for (const alias of intents[intentKey]) {
+            const sim = similarity(t, alias.toLowerCase());
+            if (sim > 0.8) {
+              // map intentKey to fields (reuse previous mapping)
+              switch (intentKey) {
+                case "leetcode":
+                  fields = Array.from(new Set([...(fields || []), "leetcodeId", "lcTotal", "lcRating", "lcEasy", "lcMed", "lcHard", "lcBadges", "lcMax"]));
+                  break;
+                case "phone":
+                  fields = Array.from(new Set([...(fields || []), "mobile", "altMobile"]));
+                  break;
+                case "personal":
+                  fields = Array.from(new Set([...(fields || []), "personalEmail", "officialEmail", "currentAddress", "permanentAddress"]));
+                  break;
+                case "cgpa":
+                  fields = Array.from(new Set([...(fields || []), "cgpaOverall"]));
+                  break;
+                case "gpa":
+                  fields = Array.from(new Set([...(fields || []), "gpaSem1", "gpaSem2", "gpaSem3"]));
+                  break;
+                case "codechef":
+                  fields = Array.from(new Set([...(fields || []), "codechefId", "ccTotal", "ccRank", "ccRating", "ccBadges"]));
+                  break;
+                case "skillrack":
+                  fields = Array.from(new Set([...(fields || []), "srProblems", "srRank"]));
+                  break;
+                case "github":
+                  fields = Array.from(new Set([...(fields || []), "github"]));
+                  break;
+                case "residency":
+                  fields = Array.from(new Set([...(fields || []), "isHosteller"]));
+                  break;
+              }
+            }
+          }
+        }
+      }
+
+      // Numeric token heuristics: detect bare numbers and map them sensibly
+      const numericTokens = tokens.filter((tt) => /^\d+$/.test(tt));
+      for (const nt of numericTokens) {
+        const n = Number(nt);
+        // Common case: '10' or '12' likely refers to 10th/12th academic records
+        if (n === 10) {
+          fields = Array.from(new Set([...(fields || []), 'tenthPercentage', 'tenthYear']));
+        } else if (n === 12) {
+          fields = Array.from(new Set([...(fields || []), 'twelfthPercentage', 'twelfthYear']));
+        } else if (nt.length >= 3) {
+          // longer numeric tokens could be a regNo fragment or a year (e.g., 2021)
+          // assume regNo fragment first
+          fields = Array.from(new Set([...(fields || []), 'regNo', 'name', 'dept', 'section']));
+        } else if (n >= 1 && n <= 8) {
+          // small numbers 1..8 could mean academic year/semester — show year field
+          fields = Array.from(new Set([...(fields || []), 'year']));
+        } else {
+          // fallback: treat as regNo fragment
+          fields = Array.from(new Set([...(fields || []), 'regNo', 'name', 'dept', 'section']));
+        }
+      }
+
+      // Extra: detect tokens that are written like field names (student_name, internship_company, etc.)
+      // or camelCase/underscore variants and map them to StudentRecord keys when possible.
+      try {
+        const exemplar = (students && students[0]) || {};
+        const addIfExists = (key: string) => {
+          if (!key) return;
+          // prefer camelCase key form
+          const k = String(key);
+          if (Object.prototype.hasOwnProperty.call(exemplar, k)) {
+            fields = Array.from(new Set([...(fields || []), k]));
+            return true;
+          }
+          return false;
+        };
+
+        const toCamel = (raw: string) => {
+          const parts = raw.split(/[^a-z0-9]+/i).filter(Boolean);
+          if (parts.length === 0) return "";
+          return (
+            parts[0].toLowerCase() +
+            parts
+              .slice(1)
+              .map((p) => p[0].toUpperCase() + p.slice(1).toLowerCase())
+              .join("")
+          );
+        };
+
+        for (const t of tokens) {
+          // allow underscore/hyphen separated tokens
+          const cleaned = String(t || "").replace(/[^a-z0-9_\-]/gi, "");
+          if (!cleaned) continue;
+
+          // Attempt direct forms
+          const camel = toCamel(cleaned);
+          if (camel && addIfExists(camel)) continue;
+
+          // plain lowercase
+          if (addIfExists(cleaned.toLowerCase())) continue;
+
+          // check if token contains known words that map to fields
+          const low = cleaned.toLowerCase();
+          if (low.includes("intern") || low.includes("company") || low.includes("offer")) {
+            addIfExists("internshipCompany");
+            addIfExists("internshipOfferLink");
+          }
+          if (low.includes("diploma")) {
+            addIfExists("diplomaYear");
+            addIfExists("diplomaPercentage");
+          }
+          if (low.includes("guardian")) {
+            addIfExists("guardianName");
+          }
+          // detect sem/GPA mentions like sem4 or gpa4
+          const m = low.match(/(?:sem|gpa)\s*\-?\s*(\d)/);
+          if (m) {
+            const n = Number(m[1]);
+            if (n >= 4 && n <= 8) addIfExists(`gpaSem${n}`);
+          }
+        }
+      } catch (e) {
+        // non-fatal
+      }
+
+      // remove intent tokens and known field-alias tokens to derive name guess
+      let nameOnly = segLow;
+      for (const arr of Object.values(intents)) {
+        for (const token of arr) {
+          nameOnly = nameOnly.replace(new RegExp(token, "gi"), "").trim();
+        }
+      }
+      // also remove tokens from fieldAliases so words like "father" or "aadhar" are stripped
+      for (const arr of Object.values((() => {
+        // build fieldAliases inline to avoid hoisting issues
+        return {
+          aadhar: ["aadhar", "adhar", "aadhar no", "aadhar number"],
+          pan: ["pan", "pan no", "pan number"],
+          cgpaOverall: ["cgpa", "cgpa overall"],
+          leetcodeId: ["leetcode", "lc", "leet"],
+          codechefId: ["codechef", "cc"],
+          github: ["github", "git", "git hub"],
+          linkedin: ["linkedin", "linked in"],
+          personalEmail: ["email", "personal email", "personal mail", "mail"],
+          officialEmail: ["official email", "official mail", "office mail"],
+          mobile: ["mobile", "phone", "mobile no", "phone number", "contact"],
+          fatherName: ["father", "father name", "dad", "daddy", "father's name"],
+          motherName: ["mother", "mother name", "mom", "mummy", "mother's name"],
+          dob: ["dob", "date of birth", "birthdate", "d.o.b"],
+          regNo: ["reg", "reg no", "registration", "roll", "roll no", "regno"],
+          resumeUrl: ["resume", "cv", "curriculum vitae", "resume link"],
+          knownTechStack: ["skills", "known tech stack", "tech stack", "technologies", "stack"],
+          placement: ["placement", "placed", "offer", "company", "company offer", "package"],
+          coeName: ["coe", "center of excellence", "coe name", "projects"],
+          isHosteller: ["hostel", "hosteller", "residency", "home", "day scholar", "dayscholar"],
+        };
+      })())) {
+        for (const token of arr) {
+          nameOnly = nameOnly.replace(new RegExp(token, "gi"), "").trim();
+        }
+      }
+
+      const matchByRegLocal = (s: StudentRecord) => s.regNo.toLowerCase() === segLow || s.regNo.toLowerCase() === seg.toLowerCase();
+
+      let matches: StudentRecord[] = students.filter((s) => matchByRegLocal(s));
+
+      // Exact/substring matching
+      if (matches.length === 0) {
+        const guess = nameOnly || segLow;
+        matches = students.filter((s) => {
+          const n = s.name.toLowerCase();
+          return n === guess || n.startsWith(guess) || n.includes(guess);
+        });
+      }
+
+      // Fuzzy matching: consider name, regNo and email similarity; return top matches when above threshold
+      let notFound = false;
+      if (matches.length === 0) {
+        const guess = (nameOnly || segLow).toLowerCase();
+        const allScored = students.map((s) => {
+          const nameSim = similarity(s.name.toLowerCase(), guess);
+          const regSim = similarity((s.regNo || "").toLowerCase(), guess);
+          const emailSim = similarity(((s.personalEmail || s.officialEmail) || "").toLowerCase(), guess);
+          const score = Math.max(nameSim, regSim, emailSim);
+          return { s, score };
+        });
+        const scoredAllSorted = allScored.sort((a, b) => b.score - a.score);
+        const maxScore = scoredAllSorted.length ? scoredAllSorted[0].score : 0;
+
+        // Confidence policy:
+        // - < 0.30: treat as not found (very unlikely)
+        // - 0.30..0.60: low confidence (show best matches but mark as lowConfidence)
+        // - > 0.60: high confidence, show matches normally
+        if (maxScore < 0.3) {
+          notFound = true;
+        } else {
+          const threshold = maxScore >= 0.6 ? 0.35 : 0.25; // allow wider net when low max
+          const scored = scoredAllSorted.filter((x) => x.score >= threshold);
+          if (scored.length > 0) {
+            // take top 5 fuzzy matches
+            matches = scored.slice(0, 5).map((x) => x.s);
+            const scores = scored.slice(0, 5).map((x) => x.score);
+            const confidence = maxScore;
+            const lowConfidence = confidence < 0.6;
+            // push item with confidence metadata
+            items.push({ students: matches, fields, query: seg, notFound: false, lowConfidence, confidence, scores });
+            // skip the default push below
+            continue;
+          } else {
+            notFound = true;
+          }
+        }
+      }
+
+        // If this segment produced no student matches but did identify fields,
+        // and there is a previous item in the same semicolon-group, treat this as additional fields for the previous student.
+        if ((matches.length === 0 || notFound) && fields && fields.length > 0 && groupItems.length > 0) {
+          const prev = groupItems[groupItems.length - 1];
+          prev.fields = Array.from(new Set([...(prev.fields || []), ...fields]));
+          // Merge query text for clarity
+          prev.query = `${prev.query}, ${seg}`;
+          continue;
+        }
+
+        // default push (exact/substring matches or explicit notFound) into group-specific items
+        groupItems.push({ students: matches, fields, query: seg, notFound });
+      }
+
+      // append processed items from this semicolon-group to overall items in order
+      items.push(...groupItems);
+    }
+
+    setNlpResult({ items });
+  };
+
+  const startEditing = (regNo: string, key: string, currentVal: any) => {
+    setNlpEdits((p) => ({ ...(p || {}), [regNo]: { ...((p || {})[regNo] || {}), [key]: currentVal } }));
+  };
+
+  const updateEditValue = (regNo: string, key: string, value: any) => {
+    setNlpEdits((p) => ({ ...(p || {}), [regNo]: { ...((p || {})[regNo] || {}), [key]: value } }));
+  };
+
+  const clearEditsFor = (regNo: string) => {
+    setNlpEdits((p) => {
+      if (!p) return {};
+      const copy = { ...p };
+      delete copy[regNo];
+      return copy;
+    });
+  };
+
+  const saveEditsForItem = async (itemIdx: number) => {
+    if (!nlpResult) return;
+    const item = nlpResult.items[itemIdx];
+    if (!item || !item.students || item.students.length === 0) return;
+
+    // collect unique regNos from this item
+    const regNos = Array.from(new Set(item.students.map((s) => s.regNo)));
+    const results: any[] = [];
+    for (const reg of regNos) {
+      const edits = (nlpEdits || {})[reg];
+      if (!edits || Object.keys(edits).length === 0) continue;
+      // call backend update
+      try {
+        const res = await updateStudentByRegNo(reg, edits);
+        if (res && res.success && res.data) {
+          // update local students state by remapping returned row
+          try {
+            const mapped = mapStudentRowToRecord(res.data as any);
+            setStudents((prev) => prev.map((s) => (s.regNo === mapped.regNo ? { ...s, ...mapped } : s)));
+          } catch (e) {
+            console.warn("mapping after save failed", e);
+          }
+          // clear edits for this reg
+          clearEditsFor(reg);
+        }
+        results.push({ reg, ok: true });
+      } catch (e) {
+        console.warn("saveEdits failed for", reg, e);
+        results.push({ reg, ok: false, error: e });
+      }
+    }
+
+    // refresh NLP result to reflect updated values
+    setNlpResult((p) => ({ ...(p || {}), items: p?.items || [] }));
+    return results;
+  };
+
   const labelToKey = (label: string) => {
     const map: Record<string, string> = {
       "REG NO": "regNo",
@@ -401,6 +898,18 @@ export const Dashboard: React.FC<{
       "GITHUB ID": "github",
       LINKEDIN: "linkedin",
       "RESUME LINK": "resumeUrl",
+      "GUARDIAN NAME": "guardianName",
+      "DIPLOMA YEAR": "diplomaYear",
+      "DIPLOMA %": "diplomaPercentage",
+      "GPA SEM4": "gpaSem4",
+      "GPA SEM5": "gpaSem5",
+      "GPA SEM6": "gpaSem6",
+      "GPA SEM7": "gpaSem7",
+      "GPA SEM8": "gpaSem8",
+      "SKILL RACK ID": "skillrackId",
+      "INTERNSHIP COMPANY NAME": "internshipCompany",
+      "INTERNSHIP OFFER LETTER LINK": "internshipOfferLink",
+      "COMPANY/OFFER": "internshipCompany",
     };
     return map[label] || label.replace(/[^a-z0-9]/gi, "").toLowerCase();
   };
@@ -516,10 +1025,19 @@ export const Dashboard: React.FC<{
               <div className="relative w-full md:w-80">
                 <input
                   type="text"
-                  placeholder="Filter nodes..."
+                  placeholder="Type In Query"
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2 pl-9 pr-4 text-xs font-bold text-slate-800 focus:outline-none focus:border-violet-400 transition-all"
                   value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                  onChange={(e) => {
+                    setSearch(e.target.value);
+                    setNlpQuery(e.target.value);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      processNlpQuery((e.target as HTMLInputElement).value);
+                    }
+                  }}
                 />
                 <svg
                   className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
@@ -535,29 +1053,340 @@ export const Dashboard: React.FC<{
                   />
                 </svg>
               </div>
-              <div className="flex gap-2">
-                <AirySortBtn
-                  active={sortField === "cgpaOverall"}
-                  onClick={() => {
-                    setSortField("cgpaOverall");
-                    setSortDirection((p) => (p === "asc" ? "desc" : "asc"));
-                  }}
-                >
-                  CGPA GRID
-                </AirySortBtn>
-                <AirySortBtn
-                  active={sortField === "name"}
-                  onClick={() => {
-                    setSortField("name");
-                    setSortDirection((p) => (p === "asc" ? "desc" : "asc"));
-                  }}
-                >
-                  ALPHA
-                </AirySortBtn>
-              </div>
+              {/* Sort buttons removed per request */}
             </div>
 
-            <div className="overflow-x-auto">
+              {/* Render NLP result cards when present */}
+              {nlpResult && nlpResult.items && nlpResult.items.length > 0 && (
+                <div className="px-4">
+                  {nlpResult.items.map((item, idx) => (
+                    <div key={idx} className="mb-4">
+                      <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
+                          <div className="flex items-center justify-between">
+                          <div>
+                            {item.notFound ? (
+                              <div>
+                                <div className="text-sm font-extrabold text-rose-600">No matching student</div>
+                                <div className="text-[11px] text-rose-500">Query: {item.query}</div>
+                              </div>
+                            ) : (
+                              <div>
+                                <div className="flex items-center gap-3">
+                                  <div className="text-sm font-extrabold text-slate-900">{item.students.length === 1 ? item.students[0].name : `${item.students.length} matches`}</div>
+                                  {item.students && item.students.length === 1 && (
+                                    <div className="text-[10px] text-slate-400 ml-3">Last updated: {(item.students[0].updatedAt && new Date(item.students[0].updatedAt).toLocaleString()) || '-'}</div>
+                                  )}
+                                  {typeof item.confidence === 'number' && (
+                                    <div className={`text-[11px] font-black px-2 py-0.5 rounded-md ${item.lowConfidence ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                                      {item.lowConfidence ? 'Low confidence' : 'Confidence'} • {(item.confidence * 100).toFixed(0)}%
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="text-[11px] text-slate-400">{item.students.length === 1 ? `${item.students[0].regNo} • ${item.students[0].section}` : `Query: ${item.query}`}</div>
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {item.students.length === 1 ? (
+                              <button onClick={() => { setSelectedStudent(item.students[0]); setNlpResult(null); }} className="px-3 py-1.5 bg-violet-600 text-white rounded-lg text-[11px] font-black">View</button>
+                            ) : null}
+                            <button onClick={() => { setNlpResult(null); }} className="px-3 py-1.5 border border-slate-200 bg-white text-slate-700 rounded-lg text-[11px] font-black">Cancel</button>
+                          </div>
+                        </div>
+
+                          <div className="mt-3">
+                            {/* Save button for edits in this NLP item */}
+                            <div className="flex items-center justify-end gap-2 mb-3">
+                              <button
+                                onClick={async () => {
+                                  await saveEditsForItem(idx);
+                                }}
+                                className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[11px] font-black"
+                              >
+                                Save
+                              </button>
+                            </div>
+                          {(() => {
+                            const s = ((item.students && item.students[0]) as any) || {};
+
+                            // If this item is a top-N request, render a compact leaderboard table
+                            const isTopRequest = typeof item.query === 'string' && /\btop\b/i.test(item.query) && Array.isArray(item.students) && item.students.length > 0;
+                            if (isTopRequest) {
+                              const cols = [
+                                { key: '__sno', label: 'S.No' },
+                                { key: 'regNo', label: 'Reg No' },
+                                { key: 'name', label: 'Name' },
+                                // additional platform fields from item.fields
+                                ...(item.fields && item.fields.length > 0 ? item.fields.map((k) => ({ key: k, label: String(k).replace(/([A-Z])/g, ' $1').replace(/_/g, ' ').toUpperCase() })) : []),
+                              ];
+
+                              return (
+                                <div className="overflow-x-auto">
+                                  <table className="w-full text-left border-collapse">
+                                    <thead>
+                                      <tr className="text-[10px] font-black text-slate-500 uppercase tracking-wider border-b border-slate-100">
+                                        {cols.map((c) => (
+                                          <th key={c.key} className="px-3 py-2">{c.label}</th>
+                                        ))}
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {item.students.map((st, idx) => {
+                                        const reg = st.regNo || '';
+                                        return (
+                                          <tr key={reg || idx} className="hover:bg-slate-50">
+                                            <td className="px-3 py-2 text-[11px] font-black text-slate-400">{idx + 1}</td>
+                                            <td className="px-3 py-2 text-[11px] font-black text-slate-700">{st.regNo || '-'}</td>
+                                            <td className="px-3 py-2 text-[11px] font-black text-slate-900">{st.name || '-'}</td>
+                                            {(item.fields || []).map((fk) => {
+                                              const editing = (nlpEdits[reg] && Object.prototype.hasOwnProperty.call(nlpEdits[reg], fk));
+                                              const editedVal = nlpEdits[reg] ? nlpEdits[reg][fk] : undefined;
+                                              const value = editedVal !== undefined ? editedVal : (st as any)[fk];
+                                              return (
+                                                <td key={fk} className="px-3 py-2 text-[11px] font-black text-slate-700">
+                                                  {editing ? (
+                                                    <input
+                                                      value={value === null || value === undefined ? '' : String(value)}
+                                                      onChange={(e) => updateEditValue(reg, fk, e.target.value)}
+                                                      className="w-full p-1 border rounded"
+                                                    />
+                                                  ) : (
+                                                    <div onDoubleClick={() => startEditing(reg, fk, (st as any)[fk] ?? '')}>
+                                                      {(() => {
+                                                        const v = (st as any)[fk];
+                                                        if (v === null || v === undefined || v === '') return '-';
+                                                        if (fk === 'isHosteller') return v ? 'Hosteller' : 'Day Scholar';
+                                                        if (Array.isArray(v)) return v.length ? v.join(', ') : '-';
+                                                        return String(v);
+                                                      })()}
+                                                    </div>
+                                                  )}
+                                                </td>
+                                              );
+                                            })}
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              );
+                            }
+
+                            const renderCard = (title: string, value: any, accentClass?: string) => (
+                              <div className={`bg-white border border-slate-100 p-3 rounded-xl ${accentClass ?? ''} transform transition-transform duration-200 hover:-translate-y-1 hover:shadow-lg cursor-pointer focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-100`} role="button" tabIndex={0}>
+                                <div className="text-[9px] font-black text-slate-600 uppercase tracking-wider">{title}</div>
+                                <div className="text-sm font-extrabold text-slate-900 mt-2">{Array.isArray(value) ? (value.length ? value.join(', ') : '-') : (value === null || value === undefined || value === '' ? '-' : String(value))}</div>
+                              </div>
+                            );
+
+                            const groups: { title: string; items: { title: string; key: string }[] }[] = [
+                              { title: 'Identification', items: [
+                                  { title: 'Name', key: 'name' },
+                                  { title: 'Reg No', key: 'regNo' },
+                                  { title: 'Dept', key: 'dept' },
+                                  { title: 'Year', key: 'year' },
+                                  { title: 'Section', key: 'section' },
+                                  { title: 'Father Name', key: 'fatherName' },
+                                  { title: 'Mother Name', key: 'motherName' },
+                                  { title: 'Guardian Name', key: 'guardianName' },
+                                  { title: 'DOB', key: 'dob' },
+                                ]
+                              },
+                              { title: 'Contact', items: [
+                                  { title: 'Mobile', key: 'mobile' },
+                                  { title: 'Alt Mobile', key: 'altMobile' },
+                                  { title: 'Official Email', key: 'officialEmail' },
+                                  { title: 'Personal Email', key: 'personalEmail' },
+                                ]
+                              },
+                              { title: 'Residence', items: [
+                                  { title: 'Residency', key: 'isHosteller' },
+                                  { title: 'Dayscholar/Hosteller', key: 'isHosteller' },
+                                ]
+                              },
+                              { title: 'Address', items: [
+                                  { title: 'Current Address', key: 'currentAddress' },
+                                  { title: 'Permanent Address', key: 'permanentAddress' },
+                                  { title: 'Pincode', key: 'pincode' },
+                                  { title: 'State', key: 'state' },
+                                ]
+                              },
+                              { title: 'IDs & Documents', items: [
+                                  { title: 'Aadhar', key: 'aadhar' },
+                                  { title: 'PAN', key: 'pan' },
+                                  { title: 'Resume', key: 'resumeUrl' },
+                                ]
+                              },
+                              { title: 'Academics', items: [
+                                  { title: '10th %', key: 'tenthPercentage' },
+                                  { title: '10th Year', key: 'tenthYear' },
+                                  { title: '12th %', key: 'twelfthPercentage' },
+                                  { title: '12th Year', key: 'twelfthYear' },
+                                  { title: 'CGPA', key: 'cgpaOverall' },
+                                  { title: 'GPA Sem1', key: 'gpaSem1' },
+                                  { title: 'GPA Sem2', key: 'gpaSem2' },
+                                  { title: 'GPA Sem3', key: 'gpaSem3' },
+                                  { title: 'GPA Sem4', key: 'gpaSem4' },
+                                  { title: 'GPA Sem5', key: 'gpaSem5' },
+                                  { title: 'GPA Sem6', key: 'gpaSem6' },
+                                  { title: 'GPA Sem7', key: 'gpaSem7' },
+                                  { title: 'GPA Sem8', key: 'gpaSem8' },
+                                  { title: 'Diploma Year', key: 'diplomaYear' },
+                                  { title: 'Diploma %', key: 'diplomaPercentage' },
+                                ]
+                              },
+                              { title: 'LeetCode', items: [
+                                  { title: 'LeetCode ID', key: 'leetcodeId' },
+                                  { title: 'LC Total', key: 'lcTotal' },
+                                  { title: 'LC Easy', key: 'lcEasy' },
+                                  { title: 'LC Med', key: 'lcMed' },
+                                  { title: 'LC Hard', key: 'lcHard' },
+                                  { title: 'LC Rating', key: 'lcRating' },
+                                  { title: 'LC Badges', key: 'lcBadges' },
+                                  { title: 'LC Max', key: 'lcMax' },
+                                ]
+                              },
+                              { title: 'CodeChef', items: [
+                                  { title: 'CodeChef ID', key: 'codechefId' },
+                                  { title: 'CC Total', key: 'ccTotal' },
+                                  { title: 'CC Rank', key: 'ccRank' },
+                                  { title: 'CC Rating', key: 'ccRating' },
+                                  { title: 'CC Badges', key: 'ccBadges' },
+                                ]
+                              },
+                              { title: 'SkillRack', items: [
+                                  { title: 'SR Problems', key: 'srProblems' },
+                                  { title: 'SR Rank', key: 'srRank' },
+                                  { title: 'SkillRack ID', key: 'skillrackId' },
+                                ]
+                              },
+                              { title: 'Social & Professional', items: [
+                                  { title: 'GitHub', key: 'github' },
+                                  { title: 'LinkedIn', key: 'linkedin' },
+                                  { title: 'Known Tech Stack', key: 'knownTechStack' },
+                                ]
+                              },
+                              { title: 'Placement & COE', items: [
+                                  { title: 'Placement', key: 'placement' },
+                                  { title: 'Internship Company', key: 'internshipCompany' },
+                                  { title: 'Internship Offer Link', key: 'internshipOfferLink' },
+                                  { title: 'COE Name', key: 'coeName' },
+                                ]
+                              },
+                            ];
+
+                            // compute remaining keys that are not in groups
+                            const groupedKeys = new Set<string>();
+                            groups.forEach((g) => g.items.forEach((it) => groupedKeys.add(it.key)));
+                            // If the NLP segment requested specific fields, show only those; else show all
+                            const requestedFields = item.fields && item.fields.length > 0 ? new Set(item.fields) : null;
+                            const remaining = requestedFields
+                              ? Array.from(requestedFields).filter((k) => !groupedKeys.has(k))
+                              : Object.keys(s).filter((k) => k !== 'id' && !groupedKeys.has(k));
+
+                            // subtle palette for groups — light pastel badges and gentle accents
+                            const palette = [
+                              { badge: 'bg-blue-100 text-blue-800', accent: 'border-l-4 border-blue-300' },
+                              { badge: 'bg-green-100 text-green-800', accent: 'border-l-4 border-green-300' },
+                              { badge: 'bg-indigo-100 text-indigo-800', accent: 'border-l-4 border-indigo-300' },
+                              { badge: 'bg-rose-100 text-rose-800', accent: 'border-l-4 border-rose-300' },
+                              { badge: 'bg-amber-100 text-amber-800', accent: 'border-l-4 border-amber-300' },
+                              { badge: 'bg-sky-100 text-sky-800', accent: 'border-l-4 border-sky-300' },
+                              { badge: 'bg-purple-100 text-purple-800', accent: 'border-l-4 border-purple-300' },
+                              { badge: 'bg-teal-100 text-teal-800', accent: 'border-l-4 border-teal-300' },
+                              { badge: 'bg-fuchsia-100 text-fuchsia-800', accent: 'border-l-4 border-fuchsia-300' },
+                            ];
+
+                            return (
+                              <div className="space-y-3">
+                                {groups.map((g, gi) => {
+                                  // build values for this group
+                                  let values = g.items.map((it) => ({ title: it.title, key: it.key, val: s[it.key] }));
+                                  // if specific fields requested, filter group items to requested ones
+                                  if (requestedFields) {
+                                    values = values.filter((v) => requestedFields.has(v.key));
+                                  }
+                                  let hasAny = false;
+                                  if (requestedFields) {
+                                    hasAny = values.some((v) => requestedFields.has(v.key) || (v.val !== undefined && v.val !== null && v.val !== ''));
+                                  } else {
+                                    // show group if any value exists OR if group contains DOB (show '-' when DOB missing)
+                                    hasAny = values.some((v) => v.val !== undefined && v.val !== null && v.val !== '') || values.some((v) => v.key === 'dob');
+                                  }
+                                  if (!hasAny) return null;
+                                  const pal = palette[gi % palette.length];
+                                  return (
+                                    <div key={g.title} className="mb-4 group">
+                                      <div className={`${pal.badge} inline-block rounded-md px-3 py-1 text-[11px] font-black uppercase tracking-wider mb-2 cursor-default transition-transform duration-150 group-hover:scale-105`}>{g.title}</div>
+                                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-2">
+                                        {values.map((v) => {
+                                          const reg = s.regNo || (item.students && item.students[0] && item.students[0].regNo) || '';
+                                          const editing = (nlpEdits[reg] && Object.prototype.hasOwnProperty.call(nlpEdits[reg], v.key));
+                                          const editedVal = nlpEdits[reg] ? (nlpEdits[reg][v.key] ?? undefined) : undefined;
+                                          const displayVal = editedVal !== undefined ? editedVal : (v.val === undefined ? '-' : (v.key === 'isHosteller' ? (v.val ? 'Hosteller' : 'Day Scholar') : v.val));
+                                          return (
+                                            <div key={v.key} className="">
+                                              {editing ? (
+                                                <div className={`bg-white border border-slate-100 p-3 rounded-xl ${pal.accent} transform transition-transform duration-200 hover:-translate-y-1 hover:shadow-lg`}>
+                                                  <div className="text-[9px] font-black text-slate-600 uppercase tracking-wider">{v.title}</div>
+                                                  <input
+                                                    value={displayVal === '-' ? '' : displayVal}
+                                                    onChange={(e) => updateEditValue(reg, v.key, e.target.value)}
+                                                    className="w-full mt-2 p-2 border rounded-lg text-sm font-extrabold text-slate-900"
+                                                  />
+                                                </div>
+                                              ) : (
+                                                <div onDoubleClick={() => startEditing(reg, v.key, v.val)}>{renderCard(v.title, displayVal, pal.accent)}</div>
+                                              )}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+
+                                {remaining.length > 0 && (
+                                  <div>
+                                    <div className="bg-slate-100 text-slate-700 inline-block rounded-md px-3 py-1 text-[11px] font-black uppercase tracking-wider mb-2">Other</div>
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-2">
+                                      {remaining.map((k) => (
+                                        <div key={k}>{renderCard(String(k).replace(/([A-Z])/g, ' $1').replace(/_/g, ' ').toUpperCase(), s[k], 'border-l-4 border-slate-200')}</div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </div>
+
+                        {item.students.length > 1 && (
+                          <div className="mt-3 border-t pt-3">
+                            <div className="text-[11px] font-black text-slate-500 mb-2">Matches</div>
+                            <div className="divide-y divide-slate-100 rounded-xl overflow-hidden">
+                              {item.students.map((s) => (
+                                <div key={s.regNo} className="flex items-center justify-between gap-4 p-3 hover:bg-slate-50">
+                                  <div>
+                                    <div className="text-sm font-extrabold text-slate-900">{s.name}</div>
+                                    <div className="text-[11px] text-slate-400">{s.regNo} • {s.section} • {s.dept}</div>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <button onClick={() => { setSelectedStudent(s); setNlpResult(null); }} className="px-3 py-1.5 bg-violet-600 text-white rounded-lg text-[11px] font-black">View</button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="overflow-x-auto">
               {studentsLoading && (
                 <div className="p-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">
                   Loading section data...
@@ -772,22 +1601,22 @@ export const Dashboard: React.FC<{
 
               <div className="space-y-12">
                 <section>
-                  <AiryModalHeader title="Intelligence Node" icon="🧬" />
+                  <AiryModalHeader title="Details" icon="🧬" />
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mt-6">
                     <AiryDataItem
-                      label="Gender Cluster"
+                      label="Gender"
                       value={selectedStudent.gender === "F" ? "Female" : "Male"}
                     />
                     <AiryDataItem
-                      label="Dept Matrix"
+                      label="Dept"
                       value={selectedStudent.dept}
                     />
                     <AiryDataItem
-                      label="Registry Year"
+                      label="Year"
                       value={selectedStudent.year || "-"}
                     />
                     <AiryDataItem
-                      label="Section Hub"
+                      label="Section"
                       value={selectedStudent.section}
                     />
                     <AiryDataItem
@@ -796,27 +1625,27 @@ export const Dashboard: React.FC<{
                       highlight
                     />
                     <AiryDataItem
-                      label="PAN Node"
+                      label="PAN No."
                       value={selectedStudent.pan}
                       highlight
                     />
                     <AiryDataItem
-                      label="Father Identity"
+                      label="Father Name"
                       value={selectedStudent.fatherName}
                     />
                     <AiryDataItem
-                      label="Mother Identity"
+                      label="Mother Name"
                       value={selectedStudent.motherName}
                     />
                   </div>
                 </section>
 
                 <section>
-                  <AiryModalHeader title="Connectivity Protocols" icon="📡" />
+                  <AiryModalHeader title="Contact Detials" icon="📡" />
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-6">
                     <div className="space-y-4">
                       <AiryDataItem
-                        label="Official Mail Relay"
+                        label="College Mail"
                         value={selectedStudent.officialEmail}
                         editable={activeUpdationFields.includes(
                           "OFFICIAL MAIL"
@@ -833,7 +1662,7 @@ export const Dashboard: React.FC<{
                         }
                       />
                       <AiryDataItem
-                        label="Personal Mail Relay"
+                        label="Personal Mail"
                         value={selectedStudent.personalEmail}
                       />
                     </div>
@@ -874,11 +1703,11 @@ export const Dashboard: React.FC<{
                 </section>
 
                 <section className="bg-slate-50/50 p-6 rounded-[2rem] border border-slate-100">
-                  <AiryModalHeader title="Performance Matrix" icon="📈" />
+                  <AiryModalHeader title="Performance" icon="📈" />
                   <div className="grid grid-cols-2 md:grid-cols-5 gap-6 mt-6">
                     <div className="col-span-2 md:col-span-1">
                       <AiryDataItem
-                        label="CGPA INDEX"
+                        label="CGPA"
                         value={
                           Number.isFinite(Number(selectedStudent?.cgpaOverall))
                             ? Number(selectedStudent?.cgpaOverall).toFixed(2)
@@ -941,7 +1770,7 @@ export const Dashboard: React.FC<{
                 </section>
 
                 <section>
-                  <AiryModalHeader title="Competitive Coding Pulse" icon="⚔️" />
+                  <AiryModalHeader title="Competitive Coding" icon="⚔️" />
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
                     <CodingHubCard
                       name="LeetCode"
@@ -972,7 +1801,7 @@ export const Dashboard: React.FC<{
 
                 <section className="grid grid-cols-1 md:grid-cols-2 gap-8">
                   <div>
-                    <AiryModalHeader title="Professional DNA" icon="💼" />
+                    <AiryModalHeader title="Professional Details" icon="💼" />
                     <div className="mt-6 space-y-4">
                       <div className="flex flex-wrap gap-2">
                         {(selectedStudent.techStack || []).map((t) => (
@@ -995,10 +1824,10 @@ export const Dashboard: React.FC<{
                     </div>
                   </div>
                   <div>
-                    <AiryModalHeader title="COE Architecture" icon="🏛️" />
+                    <AiryModalHeader title="COE" icon="🏛️" />
                     <div className="mt-6 space-y-4">
                       <AiryDataItem
-                        label="COE Node"
+                        label="COE Name"
                         value={selectedStudent.coeName}
                       />
                       <AiryDataItem
@@ -1017,11 +1846,11 @@ export const Dashboard: React.FC<{
                   <AiryModalHeader title="Registry Address" icon="📍" />
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-6">
                     <AiryDataItem
-                      label="Current Logistics"
+                      label="Current Address"
                       value={selectedStudent.currentAddress}
                     />
                     <AiryDataItem
-                      label="Permanent Registry"
+                      label="Permanent Address"
                       value={selectedStudent.permanentAddress}
                     />
                   </div>
@@ -1048,7 +1877,7 @@ export const Dashboard: React.FC<{
                 </div>
                 <div>
                   <h3 className="text-xl font-black uppercase text-slate-900 leading-none">
-                    Registry Sync matrix
+                      UPDATE FIELDS
                   </h3>
                   <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mt-1">
                     Select fields to broadcast for updation
@@ -1790,7 +2619,7 @@ const CodingHubCard: React.FC<{
       <div>
         <p className="text-xl font-black tabular-nums">{rating || "N/A"}</p>
         <p className="text-[8px] font-black opacity-60 uppercase tracking-tighter">
-          Rating Index
+          Rating
         </p>
       </div>
       <div className="flex justify-between mt-4 pt-4 border-t border-current/10">

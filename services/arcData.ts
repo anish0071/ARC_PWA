@@ -40,6 +40,13 @@ export interface StudentRow {
   father_name?: string | null;
   mother_name?: string | null;
 
+  guardian_name?: string | null;
+
+  dob?: string | null;
+
+  diploma_year?: string | null;
+  diploma_percentage?: number | null;
+
   tenth_percentage?: number | null;
   twelfth_percentage?: number | null;
   tenth_year?: string | null;
@@ -49,6 +56,13 @@ export interface StudentRow {
   gpa_sem2?: number | null;
   gpa_sem3?: number | null;
   cgpa_overall?: number | null;
+
+  // Additional semester GPA fields (if your schema has them)
+  gpa_sem4?: number | null;
+  gpa_sem5?: number | null;
+  gpa_sem6?: number | null;
+  gpa_sem7?: number | null;
+  gpa_sem8?: number | null;
 
   tech_stack?: string[] | null;
   resume_url?: string | null;
@@ -74,6 +88,9 @@ export interface StudentRow {
   sr_problems?: number | null;
   sr_rank?: string | null;
 
+  // Optional SkillRack identifier if present in schema
+  skillrack_id?: string | null;
+
   github?: string | null;
   linkedin?: string | null;
 
@@ -82,6 +99,10 @@ export interface StudentRow {
   coe_projects?: string | null;
 
   is_hosteller?: boolean | null;
+  
+  // Internship related fields
+  internship_company?: string | null;
+  internship_offer_link?: string | null;
 }
 
 function lookupField(row: any, candidates: string[]) {
@@ -194,7 +215,19 @@ function normalizeStudentRow(row: any): StudentRow {
   out.gpa_sem1 = lookupField(row, ["gpa_sem1", "GPA_SEM1"]);
   out.gpa_sem2 = lookupField(row, ["gpa_sem2", "GPA_SEM2"]);
   out.gpa_sem3 = lookupField(row, ["gpa_sem3", "GPA_SEM3"]);
+  out.gpa_sem4 = lookupField(row, ["gpa_sem4", "GPA_SEM4"]);
+  out.gpa_sem5 = lookupField(row, ["gpa_sem5", "GPA_SEM5"]);
+  out.gpa_sem6 = lookupField(row, ["gpa_sem6", "GPA_SEM6"]);
+  out.gpa_sem7 = lookupField(row, ["gpa_sem7", "GPA_SEM7"]);
+  out.gpa_sem8 = lookupField(row, ["gpa_sem8", "GPA_SEM8"]);
   out.cgpa_overall = lookupField(row, ["cgpa", "CGPA", "cgpa_overall"]);
+
+  // Diploma and guardian
+  out.diploma_year = lookupField(row, ["diploma_year", "DIPLOMA_YEAR", "diplomaYear"]);
+  out.diploma_percentage = lookupField(row, ["diploma_pct", "diploma_percentage", "DIPLOMA_PCT", "DIPLOMA_PERCENTAGE"]);
+  out.guardian_name = lookupField(row, ["guardian_name", "GUARDIAN_NAME", "guardianname"]);
+
+  out.dob = lookupField(row, ["dob", "date_of_birth", "dateofbirth", "birthdate", "dateofbirth"]);
 
   // Coding platforms
   out.leetcode_id = lookupField(row, ["leetcode_id", "LEETCODE_ID"]);
@@ -258,6 +291,11 @@ function normalizeStudentRow(row: any): StudentRow {
     "COE_PROJECTS_DONE",
     "coe_projects",
   ]);
+
+  // SkillRack ID (if stored) and internship fields
+  out.skillrack_id = lookupField(row, ["skillrack_id", "skillrackid", "SKILLRACK_ID", "SKILL_RACK_ID", "sr_id"]);
+  out.internship_company = lookupField(row, ["internship_company", "INTERNSHIP_COMPANY_NAME", "internship_company_name"]);
+  out.internship_offer_link = lookupField(row, ["internship_offer_link", "INTERNSHIP_OFFER_LETTER_LINK", "internship_offer_letter_link", "internship_offer_link", "internship_offer"]);
 
   // Derive residency as boolean from either a text column (RESIDENCY_STATUS)
   // or a direct boolean column (is_hosteller). Prefer explicit residency_status text when present.
@@ -452,13 +490,47 @@ export async function updateStudentByRegNo(
 ) {
   try {
     const normalized = String(regNo || "").trim();
-    const { data, error } = await supabase
+    console.log("Updating student:", normalized, "with updates:", updates);
+    
+    // First try with uppercase REGNO
+    let { data, error } = await supabase
       .from("Students")
       .update(updates)
       .eq("REGNO", normalized)
       .select()
       .maybeSingle();
-    if (error) throw error;
+    
+    // If no rows matched, try with different column name variations
+    if (!data && !error) {
+      console.log("No match with REGNO, trying REG_NO...");
+      const result2 = await supabase
+        .from("Students")
+        .update(updates)
+        .eq("REG_NO", normalized)
+        .select()
+        .maybeSingle();
+      data = result2.data;
+      error = result2.error;
+    }
+    
+    if (!data && !error) {
+      console.log("No match with REG_NO, trying reg_no...");
+      const result3 = await supabase
+        .from("Students")
+        .update(updates)
+        .eq("reg_no", normalized)
+        .select()
+        .maybeSingle();
+      data = result3.data;
+      error = result3.error;
+    }
+    
+    if (error) {
+      console.error("Update error:", error);
+      throw error;
+    }
+    
+    console.log("Update result:", data);
     return { success: true, data };
   } catch (err: any) {
     console.warn("updateStudentByRegNo failed:", err?.message ?? err);

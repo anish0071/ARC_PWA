@@ -37,6 +37,7 @@ export interface StudentRecord {
   pan: string;
   fatherName: string;
   motherName: string;
+  dob?: string;
 
   // Schooling
   tenthPercentage: number;
@@ -49,6 +50,11 @@ export interface StudentRecord {
   gpaSem2: number;
   gpaSem3: number;
   cgpaOverall: number;
+  gpaSem4: number;
+  gpaSem5: number;
+  gpaSem6: number;
+  gpaSem7: number;
+  gpaSem8: number;
 
   // Placement & Career
   techStack: string[];
@@ -77,6 +83,16 @@ export interface StudentRecord {
   // SkillRack
   srProblems: number;
   srRank: string;
+  skillrackId?: string;
+
+  // Additional fields
+  guardianName?: string;
+  diplomaYear?: string;
+  diplomaPercentage?: number;
+
+  // Internships
+  internshipCompany?: string;
+  internshipOfferLink?: string;
 
   // Social & Professional
   github: string;
@@ -91,4 +107,6 @@ export interface StudentRecord {
   // Residency
   // Added isHosteller to StudentRecord to fix type errors in Dashboard.tsx
   isHosteller: boolean;
+  // Record last updated timestamp (ISO string) when available
+  updatedAt?: string;
 }

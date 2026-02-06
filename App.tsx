@@ -477,9 +477,9 @@ const App: React.FC = () => {
             <div className="space-y-8">
               <form onSubmit={handleSubmit} className="space-y-5">
                 <Input
-                  label="Access Identity"
+                  label="Email"
                   type="text"
-                  placeholder="asection@citchennai.net"
+                  placeholder=""
                   value={email}
                   onChange={setEmail}
                   icon={
@@ -501,9 +501,9 @@ const App: React.FC = () => {
 
                 <div className="space-y-1">
                   <Input
-                    label="Secret Phrase"
+                    label="Password"
                     type="password"
-                    placeholder="••••••••"
+                    placeholder=""
                     value={password}
                     onChange={setPassword}
                     icon={
@@ -533,7 +533,7 @@ const App: React.FC = () => {
                       type="button"
                       className="text-[9px] text-slate-400 font-black uppercase tracking-[0.1em] hover:text-[#6b46c1] transition-colors"
                     >
-                      Security Inquiry?
+                      Forgot Password?
                     </button>
                   </div>
                 </div>
@@ -543,12 +543,6 @@ const App: React.FC = () => {
                 </Button>
               </form>
             </div>
-          </div>
-
-          <div className="mt-8 text-center">
-            <p className="text-white/40 text-[9px] uppercase tracking-[0.6em] font-black select-none">
-              A.R.C. Protocol // Node v4.2.0
-            </p>
           </div>
         </div>
       </div>
