@@ -430,7 +430,7 @@ export const Dashboard: React.FC<{
 
     // Support semicolon-separated student groups, with comma-separated subsegments inside each group.
     const groups = String(raw).split(/\s*;\s*/).map((g) => g.trim()).filter(Boolean);
-    const items: { students: StudentRecord[]; fields: string[] | null; query: string; notFound?: boolean; lowConfidence?: boolean; confidence?: number; scores?: number[] }[] = [];
+    const items: { students: StudentRecord[]; fields: string[] | null; query: string; notFound?: boolean; lowConfidence?: boolean; confidence?: number; scores?: number[]; suggestion?: string; suggestionScore?: number }[] = [];
 
     for (const group of groups) {
       const subsegments = String(group).split(/\s*,\s*/).map((s) => s.trim()).filter(Boolean);
@@ -472,19 +472,303 @@ export const Dashboard: React.FC<{
             if (metric === "ccTotal") metric = "ccRating";
           }
 
-          const scored = students
-            .map((s) => ({ s, val: Number((s as any)[metric]) || 0 }))
-            .sort((a, b) => b.val - a.val)
-            .slice(0, n)
-            .map((x) => x.s);
+          let finalStudents: StudentRecord[] = [];
+          let finalScores: number[] | undefined = undefined;
+
+          if (platform === 'lc' && metricHint !== 'rating') {
+            const weights = { lcTotal: 0.2, lcMed: 0.25, lcHard: 0.35, lcRating: 0.2 };
+            const maxes = { lcTotal: 0, lcMed: 0, lcHard: 0, lcRating: 0 };
+            for (const s of students) {
+              maxes.lcTotal = Math.max(maxes.lcTotal, Number((s as any).lcTotal) || 0);
+              maxes.lcMed = Math.max(maxes.lcMed, Number((s as any).lcMed) || 0);
+              maxes.lcHard = Math.max(maxes.lcHard, Number((s as any).lcHard) || 0);
+              maxes.lcRating = Math.max(maxes.lcRating, Number((s as any).lcRating) || 0);
+            }
+
+            const scored = students
+              .map((s) => {
+                const t = Number((s as any).lcTotal) || 0;
+                const med = Number((s as any).lcMed) || 0;
+                const hard = Number((s as any).lcHard) || 0;
+                const rating = Number((s as any).lcRating) || 0;
+                const normTotal = t / (maxes.lcTotal || 1);
+                const normMed = med / (maxes.lcMed || 1);
+                const normHard = hard / (maxes.lcHard || 1);
+                const normRating = rating / (maxes.lcRating || 1);
+                const score = weights.lcTotal * normTotal + weights.lcMed * normMed + weights.lcHard * normHard + weights.lcRating * normRating;
+                return { s, score };
+              })
+              .sort((a, b) => b.score - a.score)
+              .slice(0, n);
+
+            finalStudents = scored.map((x) => x.s);
+            finalScores = scored.map((x) => x.score);
+          } else {
+            const scored = students
+              .map((s) => ({ s, val: Number((s as any)[metric]) || 0 }))
+              .sort((a, b) => b.val - a.val)
+              .slice(0, n)
+              .map((x) => x.s);
+            finalStudents = scored;
+          }
 
           // Push as a single NLP item with high confidence
-          items.push({ students: scored, fields: fieldsForPlatform, query: seg, notFound: scored.length === 0, lowConfidence: false, confidence: 1 });
+          items.push({ students: finalStudents, fields: fieldsForPlatform, query: seg, notFound: finalStudents.length === 0, lowConfidence: false, confidence: 1, scores: finalScores });
           continue;
         }
 
       // determine fields for this segment via exact intent tokens
       let fields: string[] | null = null;
+
+      // Special: detect "best-performing section lc" queries
+      const isBestSectionQuery = segLow.includes('section') && (segLow.includes('lc') || segLow.includes('leetcode')) && (segLow.includes('best') || segLow.includes('top') || segLow.includes('performing'));
+      if (isBestSectionQuery) {
+        const weights = { lcTotal: 0.2, lcMed: 0.25, lcHard: 0.35, lcRating: 0.2 };
+        const maxes = { lcTotal: 0, lcMed: 0, lcHard: 0, lcRating: 0 };
+        for (const s of students) {
+          maxes.lcTotal = Math.max(maxes.lcTotal, Number((s as any).lcTotal) || 0);
+          maxes.lcMed = Math.max(maxes.lcMed, Number((s as any).lcMed) || 0);
+          maxes.lcHard = Math.max(maxes.lcHard, Number((s as any).lcHard) || 0);
+          maxes.lcRating = Math.max(maxes.lcRating, Number((s as any).lcRating) || 0);
+        }
+
+        const perSection = new Map<string, { sum: number; count: number; sumTotal: number; sumMed: number; sumHard: number; sumRating: number }>();
+        const studentScores: Map<string, number> = new Map();
+        for (const s of students) {
+          const t = Number((s as any).lcTotal) || 0;
+          const med = Number((s as any).lcMed) || 0;
+          const hard = Number((s as any).lcHard) || 0;
+          const rating = Number((s as any).lcRating) || 0;
+          const normTotal = t / (maxes.lcTotal || 1);
+          const normMed = med / (maxes.lcMed || 1);
+          const normHard = hard / (maxes.lcHard || 1);
+          const normRating = rating / (maxes.lcRating || 1);
+          const score = weights.lcTotal * normTotal + weights.lcMed * normMed + weights.lcHard * normHard + weights.lcRating * normRating;
+          studentScores.set(s.regNo, score);
+          const rawSec = String(s.section || '').trim().toUpperCase();
+          const sec = rawSec.length === 1 && /^[A-Q]$/.test(rawSec) ? rawSec : null;
+          if (!sec) continue;
+          const prev = perSection.get(sec) || { sum: 0, count: 0, sumTotal: 0, sumMed: 0, sumHard: 0, sumRating: 0 };
+          prev.sum += score;
+          prev.count += 1;
+          prev.sumTotal += t;
+          prev.sumMed += med;
+          prev.sumHard += hard;
+          prev.sumRating += rating;
+          perSection.set(sec, prev);
+        }
+
+        if (perSection.size === 0) {
+          items.push({ students: [], fields: fieldsForPlatform, query: seg, notFound: true });
+          continue;
+        }
+
+        let bestSection = '';
+        let bestAvg = -Infinity;
+        let bestHard = -Infinity;
+        let bestRating = -Infinity;
+        let bestTotal = -Infinity;
+        for (const [sec, agg] of perSection.entries()) {
+          const avg = agg.sum / (agg.count || 1);
+          const avgHard = agg.sumHard / (agg.count || 1);
+          const avgRating = agg.sumRating / (agg.count || 1);
+          const avgTotal = agg.sumTotal / (agg.count || 1);
+          if (avg > bestAvg || (avg === bestAvg && (avgHard > bestHard || (avgHard === bestHard && (avgRating > bestRating || (avgRating === bestRating && avgTotal > bestTotal)))))) {
+            bestSection = sec;
+            bestAvg = avg;
+            bestHard = avgHard;
+            bestRating = avgRating;
+            bestTotal = avgTotal;
+          }
+        }
+
+        if (bestAvg <= 0) {
+          items.push({ students: [], fields: fieldsForPlatform, query: seg, notFound: true, suggestion: 'No LeetCode data available', suggestionScore: 0 });
+          continue;
+        }
+
+        const studentsInSection = students.filter((s) => {
+          const rawSec = String(s.section || '').trim().toUpperCase();
+          return rawSec === bestSection;
+        });
+        const scoredStudents = studentsInSection.map((s) => ({ s, score: studentScores.get(s.regNo) || 0 })).sort((a, b) => b.score - a.score).slice(0, 5);
+        const finalStudents = scoredStudents.map((x) => x.s);
+        const finalScores = scoredStudents.map((x) => x.score);
+
+        items.push({ students: finalStudents, fields: fieldsForPlatform, query: seg, notFound: finalStudents.length === 0, lowConfidence: false, confidence: bestAvg, suggestion: bestSection, suggestionScore: bestAvg, scores: finalScores });
+        continue;
+      }
+
+      // Special: detect requests for per-section LC summary / all sections
+      const isSectionsSummary = (segLow.includes('sections') || segLow.includes('all sections') || segLow.includes('list sections') || segLow.includes('sections summary') || segLow.includes('section summary')) && (segLow.includes('lc') || segLow.includes('leetcode'));
+      if (isSectionsSummary) {
+        const weights = { lcTotal: 0.2, lcMed: 0.25, lcHard: 0.35, lcRating: 0.2 };
+        const maxes = { lcTotal: 0, lcMed: 0, lcHard: 0, lcRating: 0 };
+        for (const s of students) {
+          maxes.lcTotal = Math.max(maxes.lcTotal, Number((s as any).lcTotal) || 0);
+          maxes.lcMed = Math.max(maxes.lcMed, Number((s as any).lcMed) || 0);
+          maxes.lcHard = Math.max(maxes.lcHard, Number((s as any).lcHard) || 0);
+          maxes.lcRating = Math.max(maxes.lcRating, Number((s as any).lcRating) || 0);
+        }
+
+        const perSection = new Map<string, { count: number; sumTotal: number; sumEasy: number; sumMed: number; sumHard: number; sumBadges: number; sumRating: number; sumComposite: number }>();
+        const composites: { regNo: string; name: string; section: string; composite: number; lcTotal: number; lcEasy: number; lcMed: number; lcHard: number; lcBadges: number; lcRating: number }[] = [];
+        for (const s of students) {
+          const t = Number((s as any).lcTotal) || 0;
+          const easy = Number((s as any).lcEasy) || 0;
+          const med = Number((s as any).lcMed) || 0;
+          const hard = Number((s as any).lcHard) || 0;
+          const badges = Number((s as any).lcBadges) || 0;
+          const rating = Number((s as any).lcRating) || 0;
+          const normTotal = t / (maxes.lcTotal || 1);
+          const normEasy = easy / (maxes.lcTotal || 1);
+          const normMed = med / (maxes.lcMed || 1);
+          const normHard = hard / (maxes.lcHard || 1);
+          const normRating = rating / (maxes.lcRating || 1);
+          const composite = weights.lcTotal * normTotal + weights.lcMed * normMed + weights.lcHard * normHard + weights.lcRating * normRating;
+
+          const rawSec = String(s.section || '').trim().toUpperCase();
+          const sec = rawSec.length === 1 && /^[A-Q]$/.test(rawSec) ? rawSec : null;
+          if (!sec) continue;
+          const prev = perSection.get(sec) || { count: 0, sumTotal: 0, sumEasy: 0, sumMed: 0, sumHard: 0, sumBadges: 0, sumRating: 0, sumComposite: 0 };
+          prev.count += 1;
+          prev.sumTotal += t;
+          prev.sumEasy += easy;
+          prev.sumMed += med;
+          prev.sumHard += hard;
+          prev.sumBadges += badges;
+          prev.sumRating += rating;
+          prev.sumComposite += composite;
+          perSection.set(sec, prev);
+
+          composites.push({ regNo: s.regNo, name: s.name, section: sec, composite, lcTotal: t, lcEasy: easy, lcMed: med, lcHard: hard, lcBadges: badges, lcRating: rating });
+        }
+
+        const rows: any[] = [];
+        for (const [sec, agg] of perSection.entries()) {
+          rows.push({
+            section: sec,
+            studentsCount: agg.count,
+            avgLcTotal: agg.sumTotal / agg.count,
+            avgLcEasy: agg.sumEasy / agg.count,
+            avgLcMed: agg.sumMed / agg.count,
+            avgLcHard: agg.sumHard / agg.count,
+            avgLcBadges: agg.sumBadges / agg.count,
+            avgLcRating: agg.sumRating / agg.count,
+            avgComposite: agg.sumComposite / agg.count,
+          });
+        }
+
+        rows.sort((a, b) => b.avgComposite - a.avgComposite);
+        const topStudents = composites.sort((a, b) => b.composite - a.composite).slice(0, 10);
+        const result = { sections: rows, topStudents };
+        console.debug('[Advisor NLP] sections summary', result);
+        items.push({ students: [], fields: fieldsForPlatform, query: seg, notFound: false, suggestion: JSON.stringify(result), suggestionScore: 1 });
+        continue;
+      }
+
+      // Special: detect "section performance" query - shows CGPA + competitive coding for this section
+      const isSectionPerformance = segLow.includes('section') && segLow.includes('performance');
+      if (isSectionPerformance) {
+        // Compute max values for normalization across all students in this section
+        const maxes = {
+          cgpa: 0, lcTotal: 0, lcMed: 0, lcHard: 0, lcRating: 0,
+          ccTotal: 0, ccRating: 0, srProblems: 0
+        };
+        for (const s of students) {
+          maxes.cgpa = Math.max(maxes.cgpa, Number((s as any).cgpaOverall) || 0);
+          maxes.lcTotal = Math.max(maxes.lcTotal, Number((s as any).lcTotal) || 0);
+          maxes.lcMed = Math.max(maxes.lcMed, Number((s as any).lcMed) || 0);
+          maxes.lcHard = Math.max(maxes.lcHard, Number((s as any).lcHard) || 0);
+          maxes.lcRating = Math.max(maxes.lcRating, Number((s as any).lcRating) || 0);
+          maxes.ccTotal = Math.max(maxes.ccTotal, Number((s as any).ccTotal) || 0);
+          maxes.ccRating = Math.max(maxes.ccRating, Number((s as any).ccRating) || 0);
+          maxes.srProblems = Math.max(maxes.srProblems, Number((s as any).srProblems) || 0);
+        }
+
+        // Calculate aggregates for this section
+        let agg = {
+          count: 0, sumCgpa: 0,
+          sumLcTotal: 0, sumLcEasy: 0, sumLcMed: 0, sumLcHard: 0, sumLcRating: 0, sumLcBadges: 0,
+          sumCcTotal: 0, sumCcRating: 0, sumCcBadges: 0,
+          sumSrProblems: 0, sumComposite: 0
+        };
+
+        const studentDetails: any[] = [];
+
+        for (const s of students) {
+          const cgpa = Number((s as any).cgpaOverall) || 0;
+          const lcTotal = Number((s as any).lcTotal) || 0;
+          const lcEasy = Number((s as any).lcEasy) || 0;
+          const lcMed = Number((s as any).lcMed) || 0;
+          const lcHard = Number((s as any).lcHard) || 0;
+          const lcRating = Number((s as any).lcRating) || 0;
+          const lcBadges = Number((s as any).lcBadges) || 0;
+          const ccTotal = Number((s as any).ccTotal) || 0;
+          const ccRating = Number((s as any).ccRating) || 0;
+          const ccBadges = Number((s as any).ccBadges) || 0;
+          const srProblems = Number((s as any).srProblems) || 0;
+
+          // Composite score: CGPA (30%) + LC (40%) + CC (20%) + SR (10%)
+          const normCgpa = cgpa / (maxes.cgpa || 10);
+          const normLc = (lcTotal / (maxes.lcTotal || 1) * 0.3 + lcMed / (maxes.lcMed || 1) * 0.3 + lcHard / (maxes.lcHard || 1) * 0.25 + lcRating / (maxes.lcRating || 1) * 0.15);
+          const normCc = (ccTotal / (maxes.ccTotal || 1) * 0.5 + ccRating / (maxes.ccRating || 1) * 0.5);
+          const normSr = srProblems / (maxes.srProblems || 1);
+          const composite = normCgpa * 0.3 + normLc * 0.4 + normCc * 0.2 + normSr * 0.1;
+
+          agg.count += 1;
+          agg.sumCgpa += cgpa;
+          agg.sumLcTotal += lcTotal;
+          agg.sumLcEasy += lcEasy;
+          agg.sumLcMed += lcMed;
+          agg.sumLcHard += lcHard;
+          agg.sumLcRating += lcRating;
+          agg.sumLcBadges += lcBadges;
+          agg.sumCcTotal += ccTotal;
+          agg.sumCcRating += ccRating;
+          agg.sumCcBadges += ccBadges;
+          agg.sumSrProblems += srProblems;
+          agg.sumComposite += composite;
+
+          studentDetails.push({
+            regNo: s.regNo,
+            name: s.name,
+            cgpa,
+            lcTotal, lcEasy, lcMed, lcHard, lcRating, lcBadges,
+            ccTotal, ccRating, ccBadges,
+            srProblems,
+            composite: +composite.toFixed(3)
+          });
+        }
+
+        // Sort students by composite score
+        studentDetails.sort((a, b) => b.composite - a.composite);
+        studentDetails.forEach((st, idx) => { st.rank = idx + 1; });
+
+        const c = agg.count || 1;
+        const sectionSummary = {
+          section: sectionName || 'Unknown',
+          studentCount: agg.count,
+          avgCgpa: +(agg.sumCgpa / c).toFixed(2),
+          avgLcTotal: +(agg.sumLcTotal / c).toFixed(1),
+          avgLcEasy: +(agg.sumLcEasy / c).toFixed(1),
+          avgLcMed: +(agg.sumLcMed / c).toFixed(1),
+          avgLcHard: +(agg.sumLcHard / c).toFixed(1),
+          avgLcRating: +(agg.sumLcRating / c).toFixed(0),
+          avgLcBadges: +(agg.sumLcBadges / c).toFixed(1),
+          avgCcTotal: +(agg.sumCcTotal / c).toFixed(1),
+          avgCcRating: +(agg.sumCcRating / c).toFixed(0),
+          avgCcBadges: +(agg.sumCcBadges / c).toFixed(1),
+          avgSrProblems: +(agg.sumSrProblems / c).toFixed(0),
+          compositeScore: +(agg.sumComposite / c).toFixed(3),
+        };
+
+        const result = { type: 'sectionPerformance', summary: sectionSummary, topStudents: studentDetails.slice(0, 10) };
+        console.debug('[Advisor NLP] section performance', result);
+        items.push({ students: [], fields: null, query: seg, notFound: false, suggestion: JSON.stringify(result), suggestionScore: 1 });
+        continue;
+      }
+
       for (const key in intents) {
         for (const k of intents[key]) {
           if (segLow.includes(k)) {
@@ -620,6 +904,85 @@ export const Dashboard: React.FC<{
         }
       }
 
+
+        // Numeric comparator / presence / text contains handling
+        // Detect simple numeric comparisons like "lc problems more than 22" or "cgpas above 8.5"
+        const numberMatch = segLow.match(/([0-9]+(?:\.[0-9]+)?)/);
+        const hasNegative = /\b(no|without|missing|has no|not have)\b/.test(segLow);
+        const textContainsMatch = segLow.match(/(?:address|city|town|state)\s*(?:is|:)?\s*([a-zA-Z ]{2,50})$/i);
+
+        if (numberMatch) {
+          const num = Number(numberMatch[1]);
+          // determine operator
+          let op: string = '=';
+          if (/\b(more than|above|greater than|greater)\b|>/.test(segLow)) op = '>';
+          else if (/\b(less than|below|smaller than)\b|</.test(segLow)) op = '<';
+          else if (/\b(at least|>=|minimum|min)\b/.test(segLow)) op = '>=';
+          else if (/\b(at most|<=|maximum|max)\b/.test(segLow)) op = '<=';
+
+          const numericCandidates = ['lcTotal', 'ccTotal', 'lcRating', 'ccRating', 'srProblems', 'cgpaOverall', 'gpaSem1', 'gpaSem2', 'gpaSem3'];
+          let numericField: string | null = null;
+          if (fields) {
+            for (const f of fields) if (numericCandidates.includes(f)) { numericField = f; break; }
+          }
+          if (!numericField) {
+            for (const key in fieldAliases) {
+              if (numericCandidates.includes(key)) {
+                for (const alias of fieldAliases[key]) {
+                  if (segLow.includes(alias.toLowerCase())) { numericField = key; break; }
+                }
+              }
+              if (numericField) break;
+            }
+          }
+
+          if (numericField) {
+            const filtered = students.filter((s) => {
+              const raw = (s as any)[numericField];
+              const val = Number(raw);
+              if (!Number.isFinite(val)) return false;
+              switch (op) {
+                case '>': return val > num;
+                case '<': return val < num;
+                case '>=': return val >= num;
+                case '<=': return val <= num;
+                default: return val === num;
+              }
+            });
+            items.push({ students: filtered, fields: Array.from(new Set([...(fields || []), numericField])), query: seg, notFound: filtered.length === 0, lowConfidence: false, confidence: 1 });
+            continue;
+          }
+        }
+
+        // presence checks: e.g., "no pan" -> missing pan
+        if (hasNegative) {
+          for (const key in fieldAliases) {
+            for (const alias of fieldAliases[key]) {
+              if (segLow.includes(alias.toLowerCase())) {
+                const filtered = students.filter((s) => {
+                  const v = (s as any)[key];
+                  return v === null || v === undefined || String(v).trim() === '';
+                });
+                items.push({ students: filtered, fields: Array.from(new Set([...(fields || []), key])), query: seg, notFound: filtered.length === 0, lowConfidence: false, confidence: 1 });
+                break;
+              }
+            }
+          }
+        }
+
+        // text contains checks for address-like queries
+        if (textContainsMatch) {
+          const needle = String(textContainsMatch[1] || '').trim().toLowerCase();
+          if (needle) {
+            const filtered = students.filter((s) => {
+              const ca = String((s as any).currentAddress || '').toLowerCase();
+              const pa = String((s as any).permanentAddress || '').toLowerCase();
+              return (ca && ca.includes(needle)) || (pa && pa.includes(needle));
+            });
+            items.push({ students: filtered, fields: Array.from(new Set([...(fields || []), 'currentAddress', 'permanentAddress'])), query: seg, notFound: filtered.length === 0, lowConfidence: false, confidence: 1 });
+            continue;
+          }
+        }
       // Numeric token heuristics: detect bare numbers and map them sensibly
       const numericTokens = tokens.filter((tt) => /^\d+$/.test(tt));
       for (const nt of numericTokens) {
@@ -869,6 +1232,20 @@ export const Dashboard: React.FC<{
     return results;
   };
 
+  const downloadCsv = (filename: string, headers: string[], rows: Array<string[]>) => {
+    const esc = (v: string) => '"' + String(v).replace(/"/g, '""') + '"';
+    const csv = [headers.map(esc).join(',')].concat(rows.map((r) => r.map((c) => esc(String(c ?? ''))).join(','))).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
   const labelToKey = (label: string) => {
     const map: Record<string, string> = {
       "REG NO": "regNo",
@@ -1059,7 +1436,139 @@ export const Dashboard: React.FC<{
               {/* Render NLP result cards when present */}
               {nlpResult && nlpResult.items && nlpResult.items.length > 0 && (
                 <div className="px-4">
-                  {nlpResult.items.map((item, idx) => (
+                  {nlpResult.items.map((item, idx) => {
+                    // Check if this is a section performance result
+                    let sectionPerformanceData: { type: string; summary: any; topStudents: any[] } | null = null;
+                    try {
+                      if (item.suggestion && typeof item.suggestion === 'string' && item.suggestion.includes('sectionPerformance')) {
+                        sectionPerformanceData = JSON.parse(item.suggestion);
+                      }
+                    } catch (e) {}
+
+                    if (sectionPerformanceData && sectionPerformanceData.type === 'sectionPerformance') {
+                      const summary = sectionPerformanceData.summary;
+                      const topStudents = sectionPerformanceData.topStudents;
+                      return (
+                        <div key={idx} className="mb-4">
+                          <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
+                            <div className="flex items-center justify-between mb-4">
+                              <div>
+                                <div className="text-sm font-extrabold text-slate-900">Section {summary.section} Performance</div>
+                                <div className="text-[11px] text-slate-400">{summary.studentCount} students • CGPA + Competitive Coding</div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => {
+                                    const headers = ['Rank', 'Reg No', 'Name', 'CGPA', 'LC Total', 'LC Easy', 'LC Med', 'LC Hard', 'LC Rating', 'LC Badges', 'CC Total', 'CC Rating', 'CC Badges', 'SR Problems', 'Composite'];
+                                    const rows = topStudents.map((s: any) => [
+                                      s.rank, s.regNo, s.name, s.cgpa, s.lcTotal, s.lcEasy, s.lcMed, s.lcHard, s.lcRating, s.lcBadges, s.ccTotal, s.ccRating, s.ccBadges, s.srProblems, s.composite
+                                    ].map(String));
+                                    downloadCsv(`section-${summary.section}-performance.csv`, headers, rows);
+                                  }}
+                                  className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded-lg text-[11px] font-black"
+                                >
+                                  Download CSV
+                                </button>
+                                <button onClick={() => setNlpResult(null)} className="px-3 py-1.5 border border-slate-200 bg-white text-slate-700 rounded-lg text-[11px] font-black">Close</button>
+                              </div>
+                            </div>
+
+                            {/* Section Summary Card */}
+                            <div className="bg-gradient-to-r from-violet-50 to-indigo-50 rounded-xl p-4 mb-4">
+                              <div className="text-[10px] font-black text-slate-500 uppercase tracking-wider mb-3">Section Averages</div>
+                              <div className="grid grid-cols-4 md:grid-cols-7 gap-3">
+                                <div className="text-center">
+                                  <div className="text-lg font-black text-indigo-700">{summary.avgCgpa}</div>
+                                  <div className="text-[9px] text-slate-500">CGPA</div>
+                                </div>
+                                <div className="text-center">
+                                  <div className="text-lg font-black text-amber-600">{summary.avgLcTotal}</div>
+                                  <div className="text-[9px] text-slate-500">LC Total</div>
+                                </div>
+                                <div className="text-center">
+                                  <div className="text-lg font-black text-red-600">{summary.avgLcHard}</div>
+                                  <div className="text-[9px] text-slate-500">LC Hard</div>
+                                </div>
+                                <div className="text-center">
+                                  <div className="text-lg font-black text-amber-700">{summary.avgLcRating}</div>
+                                  <div className="text-[9px] text-slate-500">LC Rating</div>
+                                </div>
+                                <div className="text-center">
+                                  <div className="text-lg font-black text-orange-600">{summary.avgCcTotal}</div>
+                                  <div className="text-[9px] text-slate-500">CC Total</div>
+                                </div>
+                                <div className="text-center">
+                                  <div className="text-lg font-black text-orange-700">{summary.avgCcRating}</div>
+                                  <div className="text-[9px] text-slate-500">CC Rating</div>
+                                </div>
+                                <div className="text-center">
+                                  <div className="text-lg font-black text-teal-600">{summary.avgSrProblems}</div>
+                                  <div className="text-[9px] text-slate-500">SR Problems</div>
+                                </div>
+                              </div>
+                              <div className="mt-3 pt-3 border-t border-slate-200 flex items-center justify-center">
+                                <div className="text-center">
+                                  <div className="text-xl font-black text-violet-700">{summary.compositeScore}</div>
+                                  <div className="text-[9px] text-slate-500">Composite Score</div>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Top 10 Students Table */}
+                            <div className="text-[10px] font-black text-slate-500 uppercase tracking-wider mb-2">Top 10 Performers</div>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-left border-collapse">
+                                <thead>
+                                  <tr className="text-[9px] font-black text-slate-500 uppercase tracking-wider border-b border-slate-200 bg-slate-50">
+                                    <th className="px-2 py-2">Rank</th>
+                                    <th className="px-2 py-2">Reg No</th>
+                                    <th className="px-2 py-2">Name</th>
+                                    <th className="px-2 py-2 bg-indigo-50 text-indigo-700">CGPA</th>
+                                    <th className="px-2 py-2 bg-amber-50 text-amber-700">LC Total</th>
+                                    <th className="px-2 py-2 bg-amber-50 text-amber-700">LC Hard</th>
+                                    <th className="px-2 py-2 bg-amber-50 text-amber-700">LC Rating</th>
+                                    <th className="px-2 py-2 bg-orange-50 text-orange-700">CC Total</th>
+                                    <th className="px-2 py-2 bg-orange-50 text-orange-700">CC Rating</th>
+                                    <th className="px-2 py-2 bg-teal-50 text-teal-700">SR Problems</th>
+                                    <th className="px-2 py-2 bg-violet-50 text-violet-700">Composite</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {topStudents.map((st: any, ridx: number) => {
+                                    const isTop3 = ridx < 3;
+                                    return (
+                                      <tr key={st.regNo} className={`hover:bg-slate-50 ${isTop3 ? 'bg-emerald-50/30' : ''}`}>
+                                        <td className="px-2 py-2 text-[11px] font-black text-slate-400">
+                                          {st.rank === 1 && <span className="text-amber-500">🥇</span>}
+                                          {st.rank === 2 && <span className="text-slate-400">🥈</span>}
+                                          {st.rank === 3 && <span className="text-orange-400">🥉</span>}
+                                          {st.rank > 3 && st.rank}
+                                        </td>
+                                        <td className="px-2 py-2 text-[11px] font-bold text-slate-600">{st.regNo}</td>
+                                        <td className="px-2 py-2 text-[11px] font-bold text-slate-900">{st.name}</td>
+                                        <td className="px-2 py-2 text-[11px] font-black text-indigo-700">{st.cgpa}</td>
+                                        <td className="px-2 py-2 text-[11px] font-bold text-amber-700">{st.lcTotal}</td>
+                                        <td className="px-2 py-2 text-[11px] font-bold text-red-600">{st.lcHard}</td>
+                                        <td className="px-2 py-2 text-[11px] font-bold text-amber-700">{st.lcRating}</td>
+                                        <td className="px-2 py-2 text-[11px] font-bold text-orange-700">{st.ccTotal}</td>
+                                        <td className="px-2 py-2 text-[11px] font-bold text-orange-700">{st.ccRating}</td>
+                                        <td className="px-2 py-2 text-[11px] font-bold text-teal-700">{st.srProblems}</td>
+                                        <td className="px-2 py-2 text-[11px] font-black text-violet-700">{st.composite}</td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                            <div className="mt-3 pt-3 border-t border-slate-100 text-[10px] text-slate-400">
+                              <span className="font-bold">Composite Score:</span> CGPA (30%) + LeetCode (40%) + CodeChef (20%) + SkillRack (10%)
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return (
                     <div key={idx} className="mb-4">
                       <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
                           <div className="flex items-center justify-between">
@@ -1111,17 +1620,40 @@ export const Dashboard: React.FC<{
 
                             // If this item is a top-N request, render a compact leaderboard table
                             const isTopRequest = typeof item.query === 'string' && /\btop\b/i.test(item.query) && Array.isArray(item.students) && item.students.length > 0;
-                            if (isTopRequest) {
+                            const numericFieldSet = new Set(['lcTotal','ccTotal','lcRating','ccRating','srProblems','cgpaOverall','gpaSem1','gpaSem2','gpaSem3','lcEasy','lcMed','lcHard']);
+                            const hasNumericFields = Array.isArray(item.fields) && item.fields.some((f) => numericFieldSet.has(f));
+                            const shouldRenderTable = isTopRequest || (Array.isArray(item.students) && item.students.length > 1 && (item.confidence === 1 || hasNumericFields));
+
+                            if (shouldRenderTable) {
                               const cols = [
                                 { key: '__sno', label: 'S.No' },
                                 { key: 'regNo', label: 'Reg No' },
                                 { key: 'name', label: 'Name' },
                                 // additional platform fields from item.fields
-                                ...(item.fields && item.fields.length > 0 ? item.fields.map((k) => ({ key: k, label: String(k).replace(/([A-Z])/g, ' $1').replace(/_/g, ' ').toUpperCase() })) : []),
+                                ...((item.fields && item.fields.length > 0) ? item.fields.map((k) => ({ key: k, label: String(k).replace(/([A-Z])/g, ' $1').replace(/_/g, ' ').toUpperCase() })) : []),
                               ];
 
                               return (
                                 <div className="overflow-x-auto">
+                                  <div className="flex justify-end mb-2">
+                                    <button
+                                      onClick={() => {
+                                        const headers = cols.map((c) => c.label);
+                                        const rows = (item.students || []).map((st, rix) => cols.map((c) => {
+                                          if (c.key === '__sno') return String(rix + 1);
+                                          const v = (st as any)[c.key];
+                                          if (v === null || v === undefined) return '';
+                                          if (Array.isArray(v)) return v.join('; ');
+                                          return String(v);
+                                        }));
+                                        downloadCsv(`nlp-table-${idx + 1}.csv`, headers, rows as any);
+                                      }}
+                                      className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded-lg text-[11px] font-black mr-2"
+                                    >
+                                      Download CSV
+                                    </button>
+                                  </div>
+
                                   <table className="w-full text-left border-collapse">
                                     <thead>
                                       <tr className="text-[10px] font-black text-slate-500 uppercase tracking-wider border-b border-slate-100">
@@ -1131,11 +1663,11 @@ export const Dashboard: React.FC<{
                                       </tr>
                                     </thead>
                                     <tbody>
-                                      {item.students.map((st, idx) => {
+                                      {item.students.map((st, ridx) => {
                                         const reg = st.regNo || '';
                                         return (
-                                          <tr key={reg || idx} className="hover:bg-slate-50">
-                                            <td className="px-3 py-2 text-[11px] font-black text-slate-400">{idx + 1}</td>
+                                          <tr key={reg || ridx} className="hover:bg-slate-50">
+                                            <td className="px-3 py-2 text-[11px] font-black text-slate-400">{ridx + 1}</td>
                                             <td className="px-3 py-2 text-[11px] font-black text-slate-700">{st.regNo || '-'}</td>
                                             <td className="px-3 py-2 text-[11px] font-black text-slate-900">{st.name || '-'}</td>
                                             {(item.fields || []).map((fk) => {
@@ -1382,7 +1914,8 @@ export const Dashboard: React.FC<{
                         )}
                       </div>
                     </div>
-                  ))}
+                  );
+                  })}
                 </div>
               )}
 

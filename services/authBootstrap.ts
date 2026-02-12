@@ -29,10 +29,17 @@ function getAuthStorageKey(projectRef: string): string {
 }
 
 function getCurrentAuthStorageKey(): string | null {
-  const rawEnvUrl = (import.meta as any).env?.VITE_SUPABASE_URL as string | undefined;
-  const ref = getProjectRefFromUrl(rawEnvUrl);
-  if (!ref) return null;
-  return getAuthStorageKey(ref);
+  try {
+    const effectiveUrl = getSupabaseProjectUrl();
+    const ref = getProjectRefFromUrl(effectiveUrl);
+    if (!ref) return null;
+    return getAuthStorageKey(ref);
+  } catch {
+    const rawEnvUrl = (import.meta as any).env?.VITE_SUPABASE_URL as string | undefined;
+    const ref = getProjectRefFromUrl(rawEnvUrl);
+    if (!ref) return null;
+    return getAuthStorageKey(ref);
+  }
 }
 
 export function readStoredSession(): StoredSession | null {
